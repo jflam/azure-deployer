@@ -1,0 +1,68 @@
+metadata:
+  name: ai-starter-stack
+  description: Static web + API + Postgres + KV + monitoring
+  version: 1.1.0
+
+resourceGroup:
+  name: ai-starter-rg
+  region: ""  # Will be selected by quota checker
+
+# Region selection behavior
+region: ""  # Leave blank for quota workflow to pick one
+allowedRegions: []  # Optional whitelist of regions
+
+deployment:
+  rollback: lastSuccessful  # options: none | lastSuccessful | named:<deploymentName>
+
+# Global tags applied to every resource
+tags:
+  environment: dev
+
+# Default Key Vault used for secret references
+keyVault: ai-starter-kv
+
+services:
+  # Static Web App (quota-free example)
+  - name: static-web
+    type: Microsoft.Web/staticSites
+    sku: Free
+    capacity: null  # quota-free
+    properties:
+      tags:
+        app: ai-starter
+
+  # Flexible Postgres
+  - name: postgres
+    type: Microsoft.DBforPostgreSQL/flexibleServers
+    sku: Standard_B1ms
+    capacity:
+      unit: vCores
+      required: 2
+    secrets:
+      adminPassword: pgAdminPassword
+    properties:
+      version: 16
+      tier: Burstable
+      storageGB: 32
+      backup:
+        retentionDays: 7
+        geoRedundant: false
+      network:
+        delegatedSubnetResourceId: ""  # Will be created by Bicep
+      administratorLogin: pgadmin
+
+  # Container Apps Environment
+  - name: api-env
+    type: Microsoft.App/managedEnvironments
+    sku: Consumption
+    capacity:
+      unit: Cores
+      required: 4
+    properties: {}
+
+  # Log Analytics Workspace
+  - name: log-analytics
+    type: Microsoft.OperationalInsights/workspaces
+    sku: PerGB2018
+    capacity: null  # quota-free
+    properties: {}
