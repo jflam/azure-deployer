@@ -1,11 +1,13 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = [
+#   "pyyaml>=6",
+#   "rich>=13",
+#   "jinja2>=3",
+# ]
+# ///
 """
 Quota-Aware Bicep Generator & Region-Selector – Provisioner CLI
-
-Requirements for uv:
-pyyaml>=6
-rich>=13
-jinja2>=3
 """
 
 import argparse
@@ -14,7 +16,7 @@ import os
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -48,7 +50,8 @@ module {{ service.name }} './modules/{{ service.type | replace('/', '_') }}.bice
     name: '{{ service.name }}'
     location: '{{ service.effective_region }}'
     {% if service.sku %}sku: '{{ service.sku }}'{% endif %}
-    {% if service.capacity %}capacity: {{ service.capacity.required }}{% endif %}
+    {% if service.capacity %}
+    capacity: {{ service.capacity.required }}{% endif %}
     {% if service.properties %}
     properties: {{ service.properties | tojson }}
     {% endif %}
@@ -70,7 +73,6 @@ resource service '{{ type }}@2021-04-01' = {
     name: sku
     capacity: capacity
   }
-  properties: properties
 }
 """,
 
@@ -196,8 +198,10 @@ class InfraManifest:
         else:
             return RollbackType.LAST_SUCCESSFUL  # Default
 
-def run_command(cmd: List[str], check: bool = True) -> Tuple[int, str, str]:
+def run_command(cmd: List[str], check: bool = True, verbose: bool = False) -> Tuple[int, str, str]:
     """Run a shell command and return (returncode, stdout, stderr)."""
+    if verbose:
+        console.print(f"[cyan]Executing command:[/cyan] {' '.join(cmd)}")
     try:
         result = subprocess.run(
             cmd,
@@ -209,42 +213,238 @@ def run_command(cmd: List[str], check: bool = True) -> Tuple[int, str, str]:
     except subprocess.CalledProcessError as e:
         return e.returncode, e.stdout, e.stderr
 
+def setup_azure_cli(verbose: bool = False) -> None:
+    """Configure Azure CLI for dynamic extension installation and ensure quota extension is present."""
+    console.print("[blue]Configuring Azure CLI for dynamic extension installation...[/blue]")
+    returncode, stdout, stderr = run_command(
+        ["az", "config", "set", "extension.use_dynamic_install=yes_without_prompt"],
+        check=False,
+        verbose=verbose
+    )
+    if returncode != 0:
+        console.print(f"[yellow]Warning: Failed to set Azure CLI dynamic extension install config. Proceeding anyway. Stderr: {stderr}[/yellow]")
+    else:
+        console.print("[green]Azure CLI configured for dynamic extension installation.[/green]")
+
+    console.print("[blue]Ensuring 'quota' Azure CLI extension is installed...[/blue]")
+    returncode, stdout, stderr = run_command(
+        ["az", "extension", "add", "--name", "quota", "--upgrade"],
+        check=False,
+        verbose=verbose
+    )
+    if returncode != 0:
+        if stderr and "already installed" in stderr.lower():
+            console.print("[green]'quota' extension is already installed.[/green]")
+        else:
+            console.print(f"[yellow]Warning: Failed to install/upgrade 'quota' CLI extension. Quota checks might fail.[/yellow]")
+            if stderr:
+                console.print(f"[yellow]Stderr: {stderr.strip()}[/yellow]")
+            if stdout:
+                console.print(f"[yellow]Stdout: {stdout.strip()}[/yellow]")
+    else:
+        console.print("[green]'quota' extension installed/upgraded successfully.[/green]")
+
 class QuotaResolver:
     """Handles quota checking and region selection."""
     
-    def __init__(self, manifest: InfraManifest):
+    def __init__(self, manifest: InfraManifest, verbose: bool = False):
         self.manifest = manifest
+        self.verbose = verbose
         self.analysis: Dict[str, Any] = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "regions": defaultdict(dict),
             "services": [],
             "viable_regions": set(),
             "selected_region": None
         }
+        self._subscription_id: Optional[str] = None  # Cache for subscription ID
+
+    def check(self) -> Dict[str, Any]:
+        """
+        Performs a full quota check for all services against candidate regions
+        and determines viable regions for deployment.
+        """
+        console.print("\n[blue]Starting quota analysis...[/blue]")
+        self.manifest.expand_regions()  # Ensure effective_region is set for all services
+
+        all_candidate_regions = self.get_candidate_regions()
+        if not all_candidate_regions:
+            console.print("[red]No candidate regions found to check.[/red]")
+            self.analysis["viable_regions"] = set()
+            return self.analysis
+
+        # Store services in analysis for reference
+        self.analysis["services"] = [
+            {
+                "name": s["name"],
+                "type": s["type"],
+                "capacity": s.get("capacity"),
+                "effective_region": s["effective_region"]
+            } for s in self.manifest.data["services"]
+        ]
+
+        # Regions where all services (that need checking in that region) pass
+        potentially_viable_regions = set(all_candidate_regions)
+
+        for service in self.manifest.data["services"]:
+            if service.get("skipQuotaCheck", False) or not service.get("capacity"):
+                console.print(f"[grey]Skipping quota analysis for {service['name']} (marked as skip or no capacity).[/grey]")
+                continue
+
+            service_effective_region = service["effective_region"]
+            
+            # Determine regions to check for this service
+            regions_to_check_for_service: Set[str]
+            if service_effective_region:  # Service has a specific region defined
+                if service_effective_region not in all_candidate_regions:
+                    console.print(f"[yellow]Warning: Service '{service['name']}' effective region '{service_effective_region}' is not in the list of allowed/available regions.[/yellow]")
+                    regions_to_check_for_service = {service_effective_region} & all_candidate_regions
+                    if not regions_to_check_for_service:
+                        console.print(f"[red]Error: Service '{service['name']}' is fixed to region '{service_effective_region}', which is not in the available/allowed candidate regions.[/red]")
+                else:
+                    regions_to_check_for_service = {service_effective_region}
+            else:  # Service inherits global region, check against all candidates
+                regions_to_check_for_service = set(all_candidate_regions)
+
+            for region_candidate in list(potentially_viable_regions):  # Iterate over a copy as we might modify the set
+                # If service is fixed to a region, and it's not this one, it doesn't affect this region_candidate's viability
+                if service_effective_region and service_effective_region != region_candidate:
+                    continue
+
+                # Check quota for the service in region_candidate
+                if not self.check_quota(service, region_candidate):
+                    # If this service fails in this region_candidate, then this region_candidate is not viable
+                    if region_candidate in potentially_viable_regions:
+                        potentially_viable_regions.remove(region_candidate)
+                        console.print(f"[yellow]Region {region_candidate} is no longer viable due to {service['name']}.[/yellow]")
+
+        self.analysis["viable_regions"] = list(potentially_viable_regions)  # Convert set to list for JSON
+        if self.analysis["viable_regions"]:
+            console.print(f"\n[green]Viable regions found: {', '.join(self.analysis['viable_regions'])}[/green]")
+        else:
+            console.print("\n[red]No viable regions found that satisfy all quota requirements.[/red]")
+
+        # Save analysis to file
+        analysis_file = "region-analysis.json"
+        try:
+            with open(analysis_file, "w") as f:
+                json.dump(self.analysis, f, indent=2)
+            console.print(f"[blue]Quota analysis saved to {analysis_file}[/blue]")
+        except IOError as e:
+            console.print(f"[red]Error saving quota analysis to {analysis_file}: {e}[/red]")
+            
+        return self.analysis
+
+    def select_region(self, auto_select: bool) -> Optional[str]:
+        """
+        Selects a region from the list of viable regions.
+        Prompts user or auto-selects based on the flag.
+        Updates self.analysis["selected_region"].
+        """
+        viable_regions = self.analysis.get("viable_regions", [])
+        if not isinstance(viable_regions, list):  # Ensure it's a list if loaded from old file
+            viable_regions = list(viable_regions)
+
+        if not viable_regions:
+            console.print("[yellow]No viable regions to select from.[/yellow]")
+            self.analysis["selected_region"] = None
+            return None
+
+        if auto_select:
+            selected_region = viable_regions[0]
+            console.print(f"[green]Auto-selected region: {selected_region}[/green]")
+            self.analysis["selected_region"] = selected_region
+            return selected_region
+        else:
+            console.print("\n[blue]Please select a region from the viable options:[/blue]")
+            for i, region_name in enumerate(viable_regions):
+                console.print(f"{i+1}. {region_name}")
+            
+            while True:
+                try:
+                    choice_str = input(f"Enter number (1-{len(viable_regions)}): ")
+                    choice = int(choice_str) - 1
+                    if 0 <= choice < len(viable_regions):
+                        selected_region = viable_regions[choice]
+                        console.print(f"[green]Selected region: {selected_region}[/green]")
+                        self.analysis["selected_region"] = selected_region
+                        return selected_region
+                    else:
+                        console.print("[red]Invalid choice. Please try again.[/red]")
+                except ValueError:
+                    console.print("[red]Invalid input. Please enter a number.[/red]")
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Region selection cancelled.[/yellow]")
+                    self.analysis["selected_region"] = None
+                    return None
+
+    def _get_subscription_id(self) -> str:
+        """Get the current Azure subscription ID."""
+        if self._subscription_id is None:
+            console.print("[blue]Fetching Azure subscription ID...[/blue]")
+            returncode, stdout, stderr = run_command(
+                ["az", "account", "show", "--query", "id", "-o", "tsv"],
+                check=True,
+                verbose=self.verbose
+            )
+            if returncode != 0 or not stdout.strip():
+                console.print(f"[red]Error: Failed to fetch Azure subscription ID. Stderr: {stderr}[/red]")
+                raise RuntimeError("Failed to fetch Azure subscription ID")
+            self._subscription_id = stdout.strip()
+            console.print(f"[green]Using subscription ID: {self._subscription_id}[/green]")
+        return self._subscription_id
         
     def check_quota(self, service: Dict[str, Any], region: str) -> bool:
         """Check quota for a single service in a region."""
         if service.get("skipQuotaCheck", False) or not service.get("capacity"):
+            console.print(f"[grey]Skipping quota check for {service['name']} (no capacity requirements)[/grey]")
             return True
             
-        provider = service["type"]
+        service_type_full = service["type"]  # e.g., "Microsoft.DBforPostgreSQL/flexibleServers"
         capacity = service["capacity"]
         required = capacity.get("required", 0)
         unit = capacity.get("unit", "")
         
         if not required or not unit:
+            console.print(f"[grey]Skipping quota check for {service['name']} (no required capacity or unit)[/grey]")
             return True
             
+        console.print(f"[blue]Checking quota for {service['name']} ({service_type_full}) in {region}...[/blue]")
+        
+        try:
+            subscription_id = self._get_subscription_id()
+        except RuntimeError as e:
+            console.print(f"[red]Error: {e}. Skipping quota check for {service['name']}.[/red]")
+            return False
+            
+        provider_parts = service_type_full.split('/', 1)
+        if len(provider_parts) != 2:
+            console.print(f"[yellow]Warning: Service type '{service_type_full}' for '{service['name']}' does not follow 'Namespace/ResourceType' format. Skipping quota check.[/yellow]")
+            return False
+            
+        namespace = provider_parts[0]  # e.g., "Microsoft.DBforPostgreSQL"
+        
+        scope = f"/subscriptions/{subscription_id}/providers/{namespace}/locations/{region}"
+        
         cmd = [
             "az", "quota", "list",
-            "--location", region,
-            "--resource-type", provider,
+            "--scope", scope,
             "-o", "json"
         ]
         
-        returncode, stdout, stderr = run_command(cmd)
+        returncode, stdout, stderr = run_command(cmd, check=False, verbose=self.verbose)
         if returncode != 0:
-            console.print(f"[yellow]Warning: Failed to check quota for {provider} in {region}[/yellow]")
+            console.print(f"[yellow]Warning: Failed to check quota for {service_type_full} in {region}. RC: {returncode}[/yellow]")
+            if stderr:
+                console.print(f"[yellow]Stderr from 'az quota list': {stderr.strip()}[/yellow]")
+            if stdout:
+                console.print(f"[yellow]Stdout from 'az quota list': {stdout.strip()}[/yellow]")
+            # Record failure in analysis
+            self.analysis["regions"][region][f"{service_type_full}_{unit}"] = {
+                "error": f"Failed to retrieve quota. RC: {returncode}",
+                "stderr": stderr.strip() if stderr else None,
+                "stdout": stdout.strip() if stdout else None
+            }
             return False
             
         try:
@@ -255,7 +455,7 @@ class QuotaResolver:
                     usage = quota.get("currentValue", 0)
                     available = limit - usage
                     
-                    self.analysis["regions"][region][f"{provider}_{unit}"] = {
+                    self.analysis["regions"][region][f"{service_type_full}_{unit}"] = {
                         "limit": limit,
                         "usage": usage,
                         "available": available,
@@ -263,137 +463,49 @@ class QuotaResolver:
                         "sufficient": available >= required
                     }
                     
+                    if available >= required:
+                        console.print(f"[green]✓ {service['name']} has sufficient quota in {region} ({available} {unit} available, {required} required)[/green]")
+                    else:
+                        console.print(f"[red]✗ {service['name']} has insufficient quota in {region} ({available} {unit} available, {required} required)[/red]")
+                    
                     return available >= required
         except json.JSONDecodeError:
-            console.print(f"[yellow]Warning: Invalid JSON response for {provider} quota check[/yellow]")
+            console.print(f"[yellow]Warning: Invalid JSON response for {service_type_full} quota check[/yellow]")
             return False
             
         return False
         
     def get_candidate_regions(self) -> Set[str]:
         """Get list of candidate regions to check."""
+        console.print("\n[blue]Fetching list of Azure regions...[/blue]")
+        
         allowed_regions = set(self.manifest.data.get("allowedRegions", []))
+        if allowed_regions:
+            console.print(f"[blue]Filtering regions to allowed list: {', '.join(allowed_regions)}[/blue]")
         
         # Get list of all regions from Azure
         cmd = ["az", "account", "list-locations", "--query", "[].name", "-o", "json"]
-        returncode, stdout, stderr = run_command(cmd)
+        returncode, stdout, stderr = run_command(cmd, verbose=self.verbose)
         
         if returncode != 0:
             raise ManifestError("Failed to fetch Azure regions")
             
         all_regions = set(json.loads(stdout))
+        console.print(f"[green]Found {len(all_regions)} available Azure regions[/green]")
         
         # If allowedRegions is specified, intersect with all regions
-        return allowed_regions & all_regions if allowed_regions else all_regions
+        result = allowed_regions & all_regions if allowed_regions else all_regions
+        if allowed_regions:
+            console.print(f"[blue]Filtered to {len(result)} allowed regions[/blue]")
         
-    def check(self) -> Dict[str, Any]:
-        """Run the quota check algorithm and return analysis."""
-        self.manifest.expand_regions()
-        
-        # Collect services that need quota checking
-        services_to_check = []
-        for service in self.manifest.data["services"]:
-            if not service.get("skipQuotaCheck", False) and service.get("capacity"):
-                services_to_check.append(service)
-                self.analysis["services"].append({
-                    "name": service["name"],
-                    "type": service["type"],
-                    "capacity": service["capacity"],
-                    "effective_region": service["effective_region"]
-                })
-        
-        # If no services need quota checking, return early
-        if not services_to_check:
-            self.analysis["viable_regions"] = list(self.get_candidate_regions())
-            return self.analysis
-            
-        # Check quotas for each service in candidate regions
-        candidate_regions = self.get_candidate_regions()
-        viable_regions = set()
-        
-        for region in candidate_regions:
-            region_viable = True
-            for service in services_to_check:
-                if not self.check_quota(service, region):
-                    region_viable = False
-                    break
-            
-            if region_viable:
-                viable_regions.add(region)
-                
-        self.analysis["viable_regions"] = list(viable_regions)
-        
-        # Write analysis to file
-        with open("region-analysis.json", "w") as f:
-            json.dump(self.analysis, f, indent=2)
-            
-        # Print summary table
-        table = Table(title="Region Analysis")
-        table.add_column("Region")
-        table.add_column("Status")
-        table.add_column("Details")
-        
-        for region in candidate_regions:
-            status = "[green]VIABLE[/green]" if region in viable_regions else "[red]BLOCKED[/red]"
-            details = []
-            for key, data in self.analysis["regions"][region].items():
-                if not data["sufficient"]:
-                    details.append(f"{key}: {data['available']}/{data['required']}")
-            
-            table.add_row(
-                region,
-                status,
-                ", ".join(details) if details else "All quotas sufficient"
-            )
-            
-        console.print(table)
-        
-        if not viable_regions:
-            console.print("[red]Error: No regions satisfy quota requirements[/red]")
-            return self.analysis
-            
-        return self.analysis
-        
-    def select_region(self, auto_select: bool = False) -> Optional[str]:
-        """Select a region from viable options."""
-        viable_regions = self.analysis["viable_regions"]
-        
-        if not viable_regions:
-            return None
-            
-        if auto_select:
-            selected = viable_regions[0]
-            console.print(f"[green]Auto-selected region: {selected}[/green]")
-            self.analysis["selected_region"] = selected
-            return selected
-            
-        # Interactive selection
-        console.print("\nViable regions:")
-        for idx, region in enumerate(viable_regions, 1):
-            console.print(f"{idx}. {region}")
-            
-        while True:
-            try:
-                choice = input("\nSelect region number (or 'q' to quit): ")
-                if choice.lower() == 'q':
-                    return None
-                    
-                idx = int(choice) - 1
-                if 0 <= idx < len(viable_regions):
-                    selected = viable_regions[idx]
-                    self.analysis["selected_region"] = selected
-                    return selected
-                    
-            except ValueError:
-                pass
-                
-            console.print("[red]Invalid selection. Try again.[/red]")
+        return result
 
 class BicepGenerator:
     """Generates Bicep templates from the manifest."""
     
-    def __init__(self, manifest: InfraManifest):
+    def __init__(self, manifest: InfraManifest, verbose: bool = False):
         self.manifest = manifest
+        self.verbose = verbose
         self.env = Environment(loader=BaseLoader())
         self.env.filters["tojson"] = json.dumps
         
@@ -414,7 +526,7 @@ class BicepGenerator:
             "-o", "json"
         ]
         
-        returncode, stdout, stderr = run_command(cmd)
+        returncode, stdout, stderr = run_command(cmd, verbose=self.verbose)
         if returncode != 0:
             console.print("[yellow]Warning: Failed to check for orphaned resources[/yellow]")
             return []
@@ -433,7 +545,7 @@ class BicepGenerator:
         except json.JSONDecodeError:
             console.print("[yellow]Warning: Invalid JSON response when checking orphans[/yellow]")
             return []
-            
+
     def generate(self) -> None:
         """Generate Bicep templates and parameter files."""
         self.manifest.expand_regions()
@@ -487,21 +599,48 @@ class BicepGenerator:
 class ARMProvisioner:
     """Handles ARM deployments with rollback support."""
     
-    def __init__(self, manifest: InfraManifest):
-        self.manifest = manifest
-        
     def provision(self, prune: bool = False) -> bool:
         """Provision the infrastructure with optional pruning."""
         # First, run quota check
-        resolver = QuotaResolver(self.manifest)
+        resolver = QuotaResolver(self.manifest, verbose=self.verbose)
         analysis = resolver.check()
-        
-        if not analysis["viable_regions"]:
-            console.print("[red]Error: No viable regions for deployment[/red]")
-            return False
+
+        selected_manifest_region = self.manifest.data.get("region", "")
+
+        if not selected_manifest_region:  # If no global region is pre-defined in the manifest
+            if not analysis.get("viable_regions"):
+                console.print("[red]Error: Quota check found no viable regions for deployment.[/red]")
+                return False
             
+            # Auto-select the first viable region for provisioning
+            selected_region_for_deployment = resolver.select_region(auto_select=True)
+            if not selected_region_for_deployment:
+                console.print("[red]Error: Failed to auto-select a region for deployment.[/red]")
+                return False
+            
+            # Update the manifest in memory for this provisioning run
+            self.manifest.data["region"] = selected_region_for_deployment
+            console.print(f"[blue]Auto-selected region for this deployment: {selected_region_for_deployment}[/blue]")
+        else:
+            # A global region is already set in the manifest
+            console.print(f"[blue]Using pre-configured global region from manifest: {selected_manifest_region}[/blue]")
+            if selected_manifest_region not in analysis.get("viable_regions", []):
+                console.print(f"[red]Error: The pre-configured global region '{selected_manifest_region}' is not viable based on current quota analysis.[/red]")
+                console.print(f"[red]Viable global regions are: {', '.join(analysis.get('viable_regions', []))}. Please run 'quota-check' or update manifest.[/red]")
+                return False
+            resolver.analysis["selected_region"] = selected_manifest_region
+
+        # Save the analysis JSON
+        analysis_file = "region-analysis-provision.json"
+        try:
+            with open(analysis_file, "w") as f:
+                json.dump(resolver.analysis, f, indent=2)
+            console.print(f"[blue]Quota analysis for provision step saved to {analysis_file}[/blue]")
+        except IOError as e:
+            console.print(f"[yellow]Warning: Could not save provision step analysis to {analysis_file}: {e}[/yellow]")
+
         # Generate templates
-        generator = BicepGenerator(self.manifest)
+        generator = BicepGenerator(self.manifest, verbose=self.verbose)
         generator.generate()
         
         # Handle orphaned resources if pruning
@@ -515,12 +654,12 @@ class ARMProvisioner:
                         "--ids", orphan["id"],
                         "--yes"
                     ]
-                    returncode, _, _ = run_command(cmd)
+                    returncode, _, _ = run_command(cmd, verbose=self.verbose)
                     if returncode != 0:
                         console.print(f"[red]Failed to delete orphaned resource: {orphan['id']}[/red]")
                         
         # Prepare deployment command
-        deployment_name = f"{self.manifest.data['metadata']['name']}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        deployment_name = f"{self.manifest.data['metadata']['name']}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
         region = self.manifest.data.get("region", "")
         
         cmd = [
@@ -537,7 +676,7 @@ class ARMProvisioner:
             
         # Execute deployment
         console.print(f"\n[blue]Starting deployment: {deployment_name}[/blue]")
-        returncode, stdout, stderr = run_command(cmd)
+        returncode, stdout, stderr = run_command(cmd, verbose=self.verbose)
         
         if returncode != 0:
             console.print("[red]Deployment failed[/red]")
@@ -559,8 +698,9 @@ class ARMProvisioner:
 class Destroyer:
     """Handles infrastructure teardown in the correct order."""
     
-    def __init__(self, manifest: InfraManifest):
+    def __init__(self, manifest: InfraManifest, verbose: bool = False):
         self.manifest = manifest
+        self.verbose = verbose
         
     def confirm_destruction(self, skip_confirmation: bool = False) -> bool:
         """Get user confirmation for destruction."""
@@ -593,7 +733,7 @@ class Destroyer:
             "-o", "json"
         ]
         
-        returncode, stdout, stderr = run_command(cmd)
+        returncode, stdout, stderr = run_command(cmd, verbose=self.verbose)
         if returncode != 0:
             console.print("[red]Failed to list resources[/red]")
             return False
@@ -642,7 +782,7 @@ class Destroyer:
         # Finally, delete the resource group
         console.print(f"\n[blue]Deleting resource group '{rg_name}'...[/blue]")
         cmd = ["az", "group", "delete", "--name", rg_name, "--yes"]
-        returncode, _, stderr = run_command(cmd)
+        returncode, _, stderr = run_command(cmd, verbose=self.verbose)
         
         if returncode != 0:
             console.print(f"[red]Failed to delete resource group: {stderr}[/red]")
@@ -657,7 +797,7 @@ class Destroyer:
         for resource in resources:
             console.print(f"[blue]Deleting {resource['type']} '{resource['name']}'...[/blue]")
             cmd = ["az", "resource", "delete", "--ids", resource["id"], "--yes"]
-            returncode, _, stderr = run_command(cmd)
+            returncode, _, stderr = run_command(cmd, verbose=self.verbose)
             
             if returncode != 0:
                 console.print(f"[yellow]Warning: Failed to delete {resource['name']}: {stderr}[/yellow]")
@@ -689,40 +829,61 @@ def main() -> int:
     args = parser.parse_args()
     
     try:
+        # Set up Azure CLI for dynamic extension installation
+        setup_azure_cli(verbose=args.verbose)
+        
         manifest = InfraManifest(args.config)
         
         if args.command == "quota-check":
-            resolver = QuotaResolver(manifest)
-            analysis = resolver.check()
+            resolver = QuotaResolver(manifest, verbose=args.verbose)
+            # The check method now performs the full analysis and saves the report
+            analysis_result = resolver.check() 
             
-            if not analysis["viable_regions"]:
-                return 2
+            if not analysis_result.get("viable_regions"):
+                console.print("[red]Quota check failed: No viable regions found.[/red]")
+                return 2  # Exit code 2 for no viable regions
                 
+            # Proceed to select region
             selected_region = resolver.select_region(args.auto_select)
             if not selected_region:
-                return 1
+                console.print("[yellow]Region selection aborted or failed.[/yellow]")
+                return 1  # Exit code 1 for other errors
                 
             # Update manifest with selected region
             manifest.data["region"] = selected_region
-            with open(args.config, "w") as f:
-                yaml.dump(manifest.data, f)
-                
-            console.print(f"[green]Updated {args.config} with selected region: {selected_region}[/green]")
-            return 0
             
+            try:
+                with open(args.config, "w") as f:
+                    yaml.dump(manifest.data, f)
+                console.print(f"[green]Updated {args.config} with selected global region: {selected_region}[/green]")
+            except IOError as e:
+                console.print(f"[red]Error updating manifest file {args.config}: {e}[/red]")
+                return 1
+
+            # Save final analysis with selection
+            analysis_file = "region-analysis.json"
+            try:
+                with open(analysis_file, "w") as f:
+                    json.dump(resolver.analysis, f, indent=2)
+                console.print(f"[blue]Final quota analysis with selection saved to {analysis_file}[/blue]")
+            except IOError as e:
+                console.print(f"[red]Error saving final quota analysis to {analysis_file}: {e}[/red]")
+            
+            return 0
+
         elif args.command == "generate":
-            generator = BicepGenerator(manifest)
+            generator = BicepGenerator(manifest, verbose=args.verbose)
             generator.generate()
             console.print("[green]Generated Bicep templates and parameter files[/green]")
             return 0
             
         elif args.command == "provision":
-            provisioner = ARMProvisioner(manifest)
+            provisioner = ARMProvisioner(manifest, verbose=args.verbose)
             success = provisioner.provision(args.prune)
             return 0 if success else 1
             
         elif args.command == "destroy":
-            destroyer = Destroyer(manifest)
+            destroyer = Destroyer(manifest, verbose=args.verbose)
             success = destroyer.destroy(args.yes)
             return 0 if success else 1
             

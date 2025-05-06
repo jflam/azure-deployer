@@ -9,7 +9,11 @@ resourceGroup:
 
 # Region selection behavior
 region: ""  # Leave blank for quota workflow to pick one
-allowedRegions: []  # Optional whitelist of regions
+allowedRegions: [
+  "eastus", 
+  "westus", 
+  "southcentralus"
+]  
 
 deployment:
   rollback: lastSuccessful  # options: none | lastSuccessful | named:<deploymentName>

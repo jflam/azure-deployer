@@ -1,0 +1,60 @@
+{
+  "timestamp": "2025-05-06T21:28:45.596852+00:00",
+  "regions": {
+    "eastus": {
+      "Microsoft.DBforPostgreSQL/flexibleServers_vCores": {
+        "error": "Failed to retrieve quota. RC: 1",
+        "stderr": "ERROR: (BadRequest) Bad request\nCode: BadRequest\nMessage: Bad request",
+        "stdout": null
+      }
+    },
+    "westus": {
+      "Microsoft.DBforPostgreSQL/flexibleServers_vCores": {
+        "error": "Failed to retrieve quota. RC: 1",
+        "stderr": "ERROR: (BadRequest) Bad request\nCode: BadRequest\nMessage: Bad request",
+        "stdout": null
+      }
+    },
+    "southcentralus": {
+      "Microsoft.DBforPostgreSQL/flexibleServers_vCores": {
+        "error": "Failed to retrieve quota. RC: 1",
+        "stderr": "ERROR: (BadRequest) Bad request\nCode: BadRequest\nMessage: Bad request",
+        "stdout": null
+      }
+    }
+  },
+  "services": [
+    {
+      "name": "static-web",
+      "type": "Microsoft.Web/staticSites",
+      "capacity": null,
+      "effective_region": ""
+    },
+    {
+      "name": "postgres",
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+      "capacity": {
+        "unit": "vCores",
+        "required": 2
+      },
+      "effective_region": ""
+    },
+    {
+      "name": "api-env",
+      "type": "Microsoft.App/managedEnvironments",
+      "capacity": {
+        "unit": "Cores",
+        "required": 4
+      },
+      "effective_region": ""
+    },
+    {
+      "name": "log-analytics",
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "capacity": null,
+      "effective_region": ""
+    }
+  ],
+  "viable_regions": [],
+  "selected_region": null
+}
