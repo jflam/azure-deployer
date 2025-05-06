@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quota-Aware Bicep Generator & Region-Selector
+Quota-Aware Bicep Generator & Region-Selector – Provisioner CLI
 
 Requirements for uv:
 pyyaml>=6
@@ -484,14 +484,14 @@ class BicepGenerator:
             console.print(table)
             console.print("[yellow]Use --prune with deploy to remove these resources.[/yellow]")
 
-class ARMDeployer:
+class ARMProvisioner:
     """Handles ARM deployments with rollback support."""
     
     def __init__(self, manifest: InfraManifest):
         self.manifest = manifest
         
-    def deploy(self, prune: bool = False) -> bool:
-        """Deploy the infrastructure with optional pruning."""
+    def provision(self, prune: bool = False) -> bool:
+        """Provision the infrastructure with optional pruning."""
         # First, run quota check
         resolver = QuotaResolver(self.manifest)
         analysis = resolver.check()
@@ -676,9 +676,11 @@ def main() -> int:
     # generate command
     generate_parser = subparsers.add_parser("generate", help="Generate Bicep & parameter files")
     
-    # deploy command
-    deploy_parser = subparsers.add_parser("deploy", help="Deploy the infrastructure")
-    deploy_parser.add_argument("--prune", action="store_true", help="Delete orphaned resources")
+    # provision command
+    provision_parser = subparsers.add_parser(
+        "provision", help="Provision the infrastructure")
+    provision_parser.add_argument("--prune", action="store_true",
+                                  help="Delete orphaned resources")
     
     # destroy command
     destroy_parser = subparsers.add_parser("destroy", help="Tear down the infrastructure")
@@ -714,9 +716,9 @@ def main() -> int:
             console.print("[green]Generated Bicep templates and parameter files[/green]")
             return 0
             
-        elif args.command == "deploy":
-            deployer = ARMDeployer(manifest)
-            success = deployer.deploy(args.prune)
+        elif args.command == "provision":
+            provisioner = ARMProvisioner(manifest)
+            success = provisioner.provision(args.prune)
             return 0 if success else 1
             
         elif args.command == "destroy":

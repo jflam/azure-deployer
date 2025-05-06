@@ -1,4 +1,4 @@
-# Azure Deployer - Quota‑Aware Bicep Generator & Region‑Selector
+# Azure Provisioner – Quota-Aware Bicep Generator & Region-Selector
 
 A Python-based CLI tool that reads `infra.yaml`, performs quota validation, auto‑selects a region, generates Bicep + parameters files, and optionally deploys or destroys the stack.
 
@@ -15,19 +15,19 @@ A Python-based CLI tool that reads `infra.yaml`, performs quota validation, auto
 
 ```bash
 # Check quotas and select region
-uv run python deployer.py quota-check
+uv run python provisioner.py quota-check
 
 # Generate Bicep templates
-uv run python deployer.py generate
+uv run python provisioner.py generate
 
 # Deploy the stack (with rollback on error)
-uv run python deployer.py deploy
+uv run python provisioner.py provision
 
 # Optional: Deploy and remove orphaned resources
-uv run python deployer.py deploy --prune
+uv run python provisioner.py provision --prune
 
 # Tear down the stack
-uv run python deployer.py destroy
+uv run python provisioner.py destroy
 ```
 
 ## Configuration (`infra.yaml`)
@@ -67,8 +67,8 @@ services:
 |---------|-------------|
 | `quota-check` | Validate quotas & optionally auto‑select region |
 | `generate` | Produce Bicep & parameter files |
-| `deploy` | Run quota check + generate + ARM deploy |
-| `deploy --prune` | As above, but delete orphaned resources |
+| `provision` | Run quota check + generate + ARM deploy |
+| `provision --prune` | As above, but delete orphaned resources |
 | `destroy` | Tear down all resources |
 
 ### Global Options

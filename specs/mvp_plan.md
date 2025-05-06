@@ -1,14 +1,14 @@
-# Implementation Plan – Deployer (Quota‑Aware Bicep Generator & Region‑Selector)
+# Implementation Plan – Provisioner (Quota-Aware Bicep Generator & Region-Selector)
 
-*Target language: ****Python ≥3.11**** (single‑file script); execution via ****`uv run`****.*
+*Target language: **Python ≥3.11** (single‑file script); execution via **`uv run`****.*
 
 ---
 
 ## 1 Objective
 
-Deliver a proof‑of‑concept CLI (`deployer.py`) that reads `infra.yaml`, performs quota validation, auto‑selects a region, generates Bicep + parameters files, and optionally deploys or destroys the stack. The script must:
+Deliver a proof‑of‑concept CLI (`provisioner.py`) that reads `infra.yaml`, performs quota validation, auto‑selects a region, generates Bicep + parameters files, and optionally deploys or destroys the stack. The script must:
 
-1. Rely only on widely‑available PyPI packages so it can be executed with **`uv run python deployer.py <cmd>`** without manual environment prep.
+1. Rely only on widely‑available PyPI packages so it can be executed with **`uv run python provisioner.py <cmd>`** without manual environment prep.
 2. Keep all logic in one file (easier audit; PoC constraint).
 3. Shell out to **Azure CLI** for all ARM/quota interactions (no bespoke SDK auth needed).
 4. Encode spec‑driven behaviours: rollback, orphan warnings, SemVer parsing, etc.
@@ -19,7 +19,7 @@ Deliver a proof‑of‑concept CLI (`deployer.py`) that reads `infra.yaml`, perf
 
 | Concern                      | Choice                         | Rationale                                                                                                                                                                           |   |                                                                                                                                                                                         |                                                                   |
 | ---------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | - | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| **Package manager / runner** | `uv run`                       | `uv` (by Astral) bootstraps an ephemeral, caching virtualenv, resolves dependencies declared **inline in deployer.py**, and streams execution. Keeps onboarding friction near‑zero. |   | `uv` (by Astral) bootstraps an ephemeral, caching virtualenv, resolves dependencies via **PEP 665 lockfiles** when present, and streams execution. Keeps onboarding friction near‑zero. |                                                                   |
+| **Package manager / runner** | `uv run`                       | `uv` (by Astral) bootstraps an ephemeral, caching virtualenv, resolves dependencies declared **inline in provisioner.py**, and streams execution. Keeps onboarding friction near‑zero. |   | `uv` (by Astral) bootstraps an ephemeral, caching virtualenv, resolves dependencies via **PEP 665 lockfiles** when present, and streams execution. Keeps onboarding friction near‑zero. |                                                                   |
 | **CLI parsing**              | `argparse` (stdlib)            | Avoids extra deps.                                                                                                                                                                  |   |                                                                                                                                                                                         |                                                                   |
 | **YAML**                     | `PyYAML >=6`                   | Ubiquitous; wheels available for macOS, Linux, Win via uv’s resolver.                                                                                                               |   |                                                                                                                                                                                         |                                                                   |
 | **Colored output**           | `rich`                         | Required for human‑friendly tables and spinners. Fallback logic is **out of scope** for the PoC.                                                                                    |   | `rich`                                                                                                                                                                                  | Great UX for status tables / warnings but optional; guard import. |
@@ -32,7 +32,7 @@ Deliver a proof‑of‑concept CLI (`deployer.py`) that reads `infra.yaml`, perf
 # Requirements for uv: pyyaml>=6 rich>=13 jinja2>=3
 ```
 
-`uv run -- python deployer.py generate ...` will install these automatically.
+`uv run -- python provisioner.py generate ...` will install these automatically.
 
 ---
 
@@ -48,7 +48,7 @@ graph TD
     C -->|destroy| G[Destroyer]
 ```
 
-> Each block is an **internal class** inside `deployer.py`; keep them small (<150 LOC each).
+> Each block is an **internal class** inside `provisioner.py`; keep them small (<150 LOC each).
 
 ---
 
@@ -79,7 +79,7 @@ graph TD
 
 ### 4.3 `BicepGenerator` (≈ 180 LOC)
 
-* Templates embedded as a Python `TEMPLATES` dict (multi‑line Jinja2 strings) inside `deployer.py`; no filesystem lookups.
+* Templates embedded as a Python `TEMPLATES` dict (multi‑line Jinja2 strings) inside `provisioner.py`; no filesystem lookups.
 * For each service:
 
   * Pick `<type>.bicep.j2` if present else `default.bicep.j2`.
@@ -130,12 +130,12 @@ graph TD
 ## 5 Command‑Line UX
 
 ```text
-Usage: python deployer.py <command> [options]
+Usage: python provisioner.py <command> [options]
 Commands:
-  quota-check   Validate quotas & optionally auto‑select region.
+  quota-check   Validate quotas & optionally auto-select region.
   generate      Produce Bicep & parameter files.
-  deploy        quota-check + generate + ARM deploy.
-  deploy --prune  As above, but delete orphans.
+  provision     quota-check + generate + ARM deploy.
+  provision --prune  As above, but delete orphans.
   destroy       Tear everything down.
 Global opts:
   -c, --config <path>   Path to infra.yaml (default ./infra.yaml)
@@ -149,7 +149,7 @@ Global opts:
 
 | Phase                           | Effort | Deliverables                                                     |
 | ------------------------------- | ------ | ---------------------------------------------------------------- |
-| **0** – Scaffolding             | ½ day  | `deployer.py` skeleton, argparse, InfraManifest load/validate.   |
+| **0** – Scaffolding             | ½ day  | `provisioner.py` skeleton, argparse, InfraManifest load/validate.   |
 | **1** – QuotaResolver MVP       | 1 day  | `quota-check` command; mock data fixtures for offline test.      |
 | **2** – Bicep templates         | 1 day  | Template folder, default module, `generate` command integration. |
 | **3** – Deploy & Rollback       | 1 day  | ARMDeployer, `deploy` command incl. rollback flag.               |
@@ -166,7 +166,7 @@ Total ≈ 5 work‑days for an experienced engineer.
 Automated unit/integration tests are **out of scope** for this proof‑of‑concept. Verification will be performed manually by running:
 
 ```bash
-uv run -- python deployer.py deploy --auto-select
+uv run -- python provisioner.py deploy --auto-select
 ```
 
 and inspecting the Azure portal to confirm that all resources provision successfully. A future iteration may introduce pytest and CI automation, but that is explicitly deferred.
@@ -175,8 +175,8 @@ and inspecting the Azure portal to confirm that all resources provision successf
 
 ## 8 Deliverables
 
-1. `deployer.py` – 600–700 LOC single file.
-2. (Templates are embedded inside `deployer.py`; no external template folder.)
+1. `provisioner.py` – 600–700 LOC single file.
+2. (Templates are embedded inside `provisioner.py`; no external template folder.)
 3. `README.md` – getting‑started (incl. `uv` install snippet).
 4. `.github/workflows/ci.yaml` – lint + unit.
 5. `examples/infra.yaml` – minimal manifest for demo.
@@ -197,7 +197,7 @@ and inspecting the Azure portal to confirm that all resources provision successf
 
 ```bash
 # One‑liner to test everything
-uv run -- python deployer.py deploy --auto-select
+uv run -- python provisioner.py deploy --auto-select
 ```
 
 `uv` will create a local cache (`~/.cache/uv`) of wheel downloads, spin up a temp virtualenv, install `pyyaml`, `rich`, `jinja2`, and run the script – perfect for laptop or CI.

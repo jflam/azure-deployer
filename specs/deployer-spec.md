@@ -1,4 +1,4 @@
-# Quota‑Aware Bicep Generator & Region‑Selector – Functional Specification
+# Quota-Aware Bicep Generator & Region-Selector – Functional Specification (Provisioner)
 
 ## 1 Background & Problem Statement
 
