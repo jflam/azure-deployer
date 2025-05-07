@@ -34,7 +34,9 @@ htmlcov/
 main.bicep
 main.parameters.json
 resources.bicep
+region-analysis.json
 
 # generated bicep output directory
 bicep/*.bicep
 bicep/*.json
+
