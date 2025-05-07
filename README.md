@@ -1,100 +1,161 @@
-# Azure Provisioner – Quota-Aware Bicep Generator & Region-Selector
+# Azure Provisioner
 
-A Python-based CLI tool that reads `infra.yaml`, performs quota validation, auto‑selects a region, generates Bicep + parameters files, and optionally deploys or destroys the stack.
+A quota-aware Bicep generator and region selector for Azure deployments. This tool helps you:
+- Find regions with sufficient quota for your Azure resources
+- Generate Bicep templates from YAML manifests
+- Deploy and manage your Azure infrastructure
 
-## Prerequisites
+## Features
 
-1. Python ≥3.11
-2. [uv](https://github.com/astral/uv) package manager
-3. Azure CLI ≥2.54 with the quota extension
-4. Logged-in Azure CLI identity with:
-   - **Reader** at subscription scope (for quota queries)
-   - **Contributor** at subscription scope (for deployments)
+- **Quota-Aware Region Selection**: Automatically checks Azure quotas across regions to find viable deployment locations
+- **YAML-Based Infrastructure Definition**: Define your Azure infrastructure using simple YAML manifests
+- **Bicep Generation**: Generates Bicep templates and parameter files from your YAML definitions
+- **Resource Support**:
+  - Static Web Apps
+  - PostgreSQL Flexible Servers
+  - Container Apps Environments
+  - Log Analytics Workspaces
+  - More coming soon...
+- **Azure SDK Auto-Resolution**: Automatically installs required Azure SDK packages based on your manifest
 
-## Quick Start
+## Installation
+
+Requires Python 3.12 or later.
 
 ```bash
-# Check quotas and select region
-uv run python provisioner.py quota-check
+# Clone the repository
+git clone https://github.com/yourusername/azure-provisioner.git
+cd azure-provisioner
 
-# Generate Bicep templates
-uv run python provisioner.py generate
+# Install using uv (recommended)
+uv pip install -e ".[dev]"
 
-# Deploy the stack (with rollback on error)
-uv run python provisioner.py provision
-
-# Optional: Deploy and remove orphaned resources
-uv run python provisioner.py provision --prune
-
-# Tear down the stack
-uv run python provisioner.py destroy
+# Or using pip
+pip install -e ".[dev]"
 ```
 
-## Configuration (`infra.yaml`)
+## Usage
 
-The infrastructure is defined in `infra.yaml`. Key sections:
+### Basic Commands
+
+```bash
+# Check quotas and find viable regions
+provisioner quota-check --config infra.yaml
+
+# Generate Bicep files
+provisioner generate --config infra.yaml
+
+# Deploy resources
+provisioner deploy --config infra.yaml
+
+# Preview changes without deploying
+provisioner deploy --config infra.yaml --what-if
+
+# Delete resources
+provisioner destroy --config infra.yaml
+```
+
+### Command Options
+
+#### quota-check
+```bash
+provisioner quota-check [OPTIONS]
+  --config, -c TEXT     Path to the infrastructure YAML file [default: infra.yaml]
+  --dry-run            Don't update the manifest with selected region
+  --output, -o TEXT    Path for quota analysis output [default: region-analysis.json]
+  --auto-select        Automatically select a viable region
+  --debug              Print verbose debug information
+```
+
+#### generate
+```bash
+provisioner generate [OPTIONS]
+  --config, -c TEXT     Path to the infrastructure YAML file [default: infra.yaml]
+  --output-dir, -o TEXT Directory for generated Bicep files
+  --debug              Print verbose debug information
+```
+
+#### deploy
+```bash
+provisioner deploy [OPTIONS]
+  --config, -c TEXT    Path to the infrastructure YAML file [default: infra.yaml]
+  --prune             Delete orphaned resources
+  --what-if           Show what would be deployed without making changes
+  --debug             Print verbose debug information
+```
+
+#### destroy
+```bash
+provisioner destroy [OPTIONS]
+  --config, -c TEXT    Path to the infrastructure YAML file [default: infra.yaml]
+  --force, -f         Skip confirmation prompt
+  --debug             Print verbose debug information
+```
+
+## Manifest Structure
+
+Example YAML manifest:
 
 ```yaml
 metadata:
-  name: my-stack
-  description: Stack description
-  version: 1.0.0
+  name: my-app
+  version: "1.0"
+  description: "My application infrastructure"
 
-resourceGroup:
-  name: my-rg
-  region: ""  # Inherits from top-level region
+resource_group:
+  name: my-app-rg
 
-region: ""  # Leave blank for quota-based selection
-allowedRegions: []  # Optional whitelist
-
-deployment:
-  rollback: lastSuccessful  # none | lastSuccessful | named:<name>
+region: ""  # Will be set by quota-check
+allowed_regions:
+  - eastus
+  - westus2
+  - centralus
 
 services:
-  - name: service-name
-    type: Microsoft.ServiceType/resourceType
-    sku: Standard_X
+  - name: my-static-site
+    type: Microsoft.Web/staticSites
+    sku: Free
     capacity:
-      unit: vCores  # Must match Quota API name.value
-      required: 2
+      unit: instances
+      required: 1
+
+  - name: my-postgres
+    type: Microsoft.DBforPostgreSQL/flexibleServers
+    sku: Standard_B1ms
+    capacity:
+      unit: vCores
+      required: 1
     properties:
-      # Service-specific properties
+      administratorLogin: pgadmin
+      version: "16"
+      storageGB: 32
 ```
 
-## Commands
+## Development
 
-| Command | Description |
-|---------|-------------|
-| `quota-check` | Validate quotas & optionally auto‑select region |
-| `generate` | Produce Bicep & parameter files |
-| `provision` | Run quota check + generate + ARM deploy |
-| `provision --prune` | As above, but delete orphaned resources |
-| `destroy` | Tear down all resources |
+### Dependencies
 
-### Global Options
+Development dependencies are included in the `[dev]` extra:
+- pytest
+- black
+- isort
+- mypy
+- pytest-cov
 
-- `-c, --config <path>` - Path to infra.yaml (default: ./infra.yaml)
-- `--auto-select` - Pick first viable region without prompt
-- `-v, --verbose` - Debug logging
+### Running Tests
 
-## Exit Codes
+```bash
+# Run all tests
+pytest
 
-- 0: Success
-- 1: Fatal error (parsing, validation, etc.)
-- 2: No viable regions satisfy quota requirements
+# Run with coverage
+pytest --cov=provisioner
+```
 
-## Generated Files
+## Author
 
-- `main.bicep` - Main deployment template
-- `modules/*.bicep` - Resource-specific modules
-- `main.parameters.json` - Parameter file
-- `region-analysis.json` - Quota check results
+John Lam (jflam@microsoft.com)
 
-## Secret Handling
+## License
 
-The manifest stores **no plaintext secrets**. Confidential values referenced by `secretRef` are supplied at deploy-time via:
-
-1. Key Vault (preferred)
-2. `main.parameters.json`
-
-If a secret exists in both locations, Key Vault takes precedence.
+MIT
