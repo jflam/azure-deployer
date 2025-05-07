@@ -29,3 +29,11 @@ htmlcov/
 # Local development
 .env
 *.log
+
+# generated bicep files and bicep parameter files
+main.bicep
+main.parameters.json
+resources.bicep
+
+# generated bicep output directory
+bicep/*
