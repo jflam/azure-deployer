@@ -72,12 +72,18 @@ class QuotaChecker:
         # Initialize region analysis
         region_quotas = {region: [] for region in all_regions}
         
-        # Check each service
-        for service in self.manifest.services:
-            # Skip services with no capacity requirements
-            if not service.capacity or service.skip_quota_check:
-                continue
-            
+        # Check if any service requires quota checking
+        services_requiring_quota_check = [
+            service for service in self.manifest.services
+            if service.capacity and not service.skip_quota_check
+        ]
+        
+        # If no services need quota checks, all considered regions are viable
+        if not services_requiring_quota_check:
+            return RegionAnalysis(region_quotas, all_regions)
+        
+        # Check each service that requires quota validation
+        for service in services_requiring_quota_check:
             # Determine which regions to check for this service
             service_regions = [service.region] if service.region else all_regions
             
@@ -95,10 +101,29 @@ class QuotaChecker:
                         print(f"Debug: Error checking quota for {service.type} in {region}: {e}")
                     # Keep track of the error but continue
         
-        # Determine viable regions (where all services have sufficient quota)
+        # Determine viable regions
         viable_regions = []
-        for region, quotas in region_quotas.items():
-            if all(q.is_sufficient() for q in quotas):
+        for region in all_regions:
+            # Count how many services should be checked in this region
+            expected_checks = 0
+            for service in services_requiring_quota_check:
+                # Service applies to this region if it has no specific region (global)
+                # or if it's explicitly set to this region
+                if service.region is None or service.region == region:
+                    expected_checks += 1
+            
+            if expected_checks == 0:
+                # No services were meant to be checked in this region
+                # (e.g., all services are pinned to other regions)
+                continue
+            
+            # Get the actual quota check results for this region
+            actual_checks = region_quotas[region]
+            
+            # Region is viable if:
+            # 1. All expected checks were performed (no failures/errors)
+            # 2. All checks that were performed show sufficient quota
+            if len(actual_checks) == expected_checks and all(q.is_sufficient() for q in actual_checks):
                 viable_regions.append(region)
         
         return RegionAnalysis(region_quotas, viable_regions)

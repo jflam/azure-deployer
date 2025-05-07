@@ -9,7 +9,7 @@ from typing import Dict, List, Set, Tuple
 SDK_MAPPING = {
     "Microsoft.Web": "azure-mgmt-web",
     "Microsoft.DBforPostgreSQL": "azure-mgmt-rdbms",
-    "Microsoft.App": "azure-mgmt-app",
+    "Microsoft.App": "azure-mgmt-appcontainers",
     "Microsoft.OperationalInsights": "azure-mgmt-loganalytics",
     "Microsoft.Compute": "azure-mgmt-compute",
     "Microsoft.Network": "azure-mgmt-network",
@@ -49,9 +49,11 @@ class SDKResolver:
             if provider in SDK_MAPPING:
                 self.required_sdks.add(SDK_MAPPING[provider])
         
-        # Always include quota client for fallback
+        # Always include quota client for fallback and identity
         self.required_sdks.add("azure-mgmt-quota")
         self.required_sdks.add("azure-identity")
+        # Add requests for direct REST calls (e.g., PostgreSQL flexible server quota)
+        self.required_sdks.add("requests")
         
         return self.required_sdks
     
@@ -102,14 +104,14 @@ class SDKResolver:
                     "quota_units": ["Cores", "AppServicePlans"]
                 },
                 "Microsoft.DBforPostgreSQL": {
-                    "sdk": "azure-mgmt-rdbms",
-                    "client_class": "PostgreSQLManagementClient",
-                    "quota_method": "usages.list",
-                    "quota_units": ["vCores", "Servers"]
+                    "sdk": "requests (Direct REST API)",
+                    "client_class": "N/A (Direct REST API call)",
+                    "quota_method": "GET /providers/Microsoft.DBforPostgreSQL/locations/{location}/resourceType/flexibleServers/usages",
+                    "quota_units": ["vCores", "Servers", "Storage"]
                 },
                 "Microsoft.App": {
-                    "sdk": "azure-mgmt-app",
-                    "client_class": "AppManagementClient",
+                    "sdk": "azure-mgmt-appcontainers",
+                    "client_class": "ContainerAppsAPIClient",
                     "quota_method": "usages.list",
                     "quota_units": ["Cores", "MemoryGB"]
                 },
@@ -118,8 +120,7 @@ class SDKResolver:
                     "client_class": "LogAnalyticsManagementClient",
                     "quota_method": "usages.list",
                     "quota_units": ["DataIngestionGB"]
-                },
-                # Add other providers as needed
+                }
             }
         }
         

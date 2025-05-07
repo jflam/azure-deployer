@@ -1,12 +1,83 @@
 {
-  "viable_regions": [
-    "eastus",
-    "southcentralus",
-    "westus"
-  ],
+  "viable_regions": [],
   "regions": {
-    "eastus": [],
-    "southcentralus": [],
-    "westus": []
+    "eastus": [
+      {
+        "resource_type": "Microsoft.DBforPostgreSQL/flexibleServers",
+        "quotas": {
+          "vCores": {
+            "current": 0.0,
+            "limit": 0.0,
+            "required": 2.0,
+            "available": 0.0,
+            "sufficient": false
+          }
+        }
+      },
+      {
+        "resource_type": "Microsoft.App/managedEnvironments",
+        "quotas": {
+          "Cores": {
+            "current": 0,
+            "limit": 0,
+            "required": 4.0,
+            "available": 0,
+            "sufficient": false
+          }
+        }
+      }
+    ],
+    "southcentralus": [
+      {
+        "resource_type": "Microsoft.DBforPostgreSQL/flexibleServers",
+        "quotas": {
+          "vCores": {
+            "current": 0.0,
+            "limit": 24.0,
+            "required": 2.0,
+            "available": 24.0,
+            "sufficient": true
+          }
+        }
+      },
+      {
+        "resource_type": "Microsoft.App/managedEnvironments",
+        "quotas": {
+          "Cores": {
+            "current": 0,
+            "limit": 0,
+            "required": 4.0,
+            "available": 0,
+            "sufficient": false
+          }
+        }
+      }
+    ],
+    "westus": [
+      {
+        "resource_type": "Microsoft.DBforPostgreSQL/flexibleServers",
+        "quotas": {
+          "vCores": {
+            "current": 0.0,
+            "limit": 24.0,
+            "required": 2.0,
+            "available": 24.0,
+            "sufficient": true
+          }
+        }
+      },
+      {
+        "resource_type": "Microsoft.App/managedEnvironments",
+        "quotas": {
+          "Cores": {
+            "current": 0,
+            "limit": 0,
+            "required": 4.0,
+            "available": 0,
+            "sufficient": false
+          }
+        }
+      }
+    ]
   }
 }

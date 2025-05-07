@@ -2,7 +2,9 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 import importlib
+import requests
 from azure.identity import DefaultAzureCredential
+from azure.core.exceptions import HttpResponseError
 from .models import QuotaInfo, ResourceQuota
 
 class ProviderAdapter(ABC):
@@ -90,48 +92,155 @@ class PostgreSQLProviderAdapter(ProviderAdapter):
     """Adapter for Microsoft.DBforPostgreSQL quota checks."""
     
     def check_quota(self, resource_type: str, region: str, capacity: Dict) -> ResourceQuota:
-        from azure.mgmt.rdbms import PostgreSQLManagementClient
-        
-        client = PostgreSQLManagementClient(self.credential, self.subscription_id)
-        usages = client.usages.list()
-        
         result = ResourceQuota(resource_type, region, {})
         
-        for usage in usages:
-            if usage.name.value.lower() == capacity["unit"].lower():
-                quota_info = QuotaInfo(
-                    unit=capacity["unit"],
-                    current_usage=usage.current_value,
-                    limit=usage.limit,
-                    required=capacity["required"]
-                )
-                result.quotas[capacity["unit"]] = quota_info
-                break
+        try:
+            token_response = self.credential.get_token("https://management.azure.com/.default")
+            token = token_response.token
+        except Exception as e:
+            print(f"Error acquiring token for PostgreSQL quota check: {e}")
+            return result
+
+        api_version = "2024-11-01-preview"
         
+        # Check if the resource_type is for flexibleServers
+        if resource_type.lower() != "microsoft.dbforpostgresql/flexibleservers":
+            print(f"Warning: PostgreSQLProviderAdapter is specialized for flexibleServers, received {resource_type}")
+            return result
+
+        url = (f"https://management.azure.com/subscriptions/{self.subscription_id}"
+               f"/providers/Microsoft.DBforPostgreSQL/locations/{region}"
+               f"/resourceType/flexibleServers/usages"
+               f"?api-version={api_version}")
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            usages_data = response.json()
+            found_quota = False
+            
+            # Map user-facing units to the strings Azure uses
+            unit_mappings = {
+                "vcores": {"cores"},  # total vCPU quota
+                # add more mappings as needed
+            }
+            requested = capacity["unit"].lower()
+
+            for item in usages_data.get("value", []):
+                api_quota_name = (item.get("name", {}) or {}).get("value", "").lower()
+                if api_quota_name and api_quota_name in unit_mappings.get(requested, {requested}):
+                    limit = item.get("limit")
+                    current_value = item.get("currentValue")
+
+                    if limit is None or current_value is None:
+                        print(f"Warning: Missing limit or currentValue for {api_quota_name} in {region} for PostgreSQL.")
+                        continue
+
+                    try:
+                        limit_val = float(limit)
+                        current_val = float(current_value)
+                    except ValueError:
+                        print(f"Warning: Non-numeric limit/currentValue for {api_quota_name} in {region} for PostgreSQL.")
+                        continue
+
+                    quota_info = QuotaInfo(
+                        unit=capacity["unit"],
+                        current_usage=current_val,
+                        limit=limit_val,
+                        required=float(capacity["required"])
+                    )
+                    result.quotas[capacity["unit"]] = quota_info
+                    found_quota = True
+                    break
+            
+            if not found_quota:
+                print(f"Warning: Quota unit '{capacity['unit']}' not found for {resource_type} in {region}. Available: {[item.get('name', {}).get('value') for item in usages_data.get('value', [])]}")
+                # If quota unit not found, mark as insufficient
+                result.quotas[capacity["unit"]] = QuotaInfo(
+                    unit=capacity["unit"],
+                    current_usage=0,
+                    limit=0,
+                    required=float(capacity["required"])
+                )
+
+        except HttpResponseError as e:
+            print(f"Error checking PostgreSQL quota via REST for {resource_type} in {region}: {e.response.status_code} - {e.response.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"RequestException checking PostgreSQL quota for {resource_type} in {region}: {e}")
+        except Exception as e:
+            print(f"Unexpected error checking PostgreSQL quota for {resource_type} in {region}: {e}")
+            
         return result
 
 class ContainerAppsProviderAdapter(ProviderAdapter):
     """Adapter for Microsoft.App quota checks."""
     
     def check_quota(self, resource_type: str, region: str, capacity: Dict) -> ResourceQuota:
-        from azure.mgmt.app import AppManagementClient
+        from azure.mgmt.appcontainers import ContainerAppsAPIClient  # Corrected import
         
-        client = AppManagementClient(self.credential, self.subscription_id)
-        usages = client.usages.list()
+        client = ContainerAppsAPIClient(self.credential, self.subscription_id)  # Corrected client
+        usages = client.usages.list(location=region)
         
         result = ResourceQuota(resource_type, region, {})
+        found_quota = False
         
+        # Container Apps always reports count-based quotas whose names start with “ManagedEnvironment…”
+        unit_mappings = {
+            "cores": {
+                "managedenvironmentcores",
+                "managedenvironmentconsumptioncores",
+                "managedenvironmentgeneralpurposecores",
+                "managedenvironmentmemoryoptimizedcores",
+            },
+            # add more mappings as needed
+        }
+        requested = capacity["unit"].lower()
+
         for usage in usages:
-            if usage.name.value.lower() == capacity["unit"].lower():
-                quota_info = QuotaInfo(
-                    unit=capacity["unit"],
-                    current_usage=usage.current_value,
-                    limit=usage.limit,
-                    required=capacity["required"]
-                )
-                result.quotas[capacity["unit"]] = quota_info
-                break
-        
+            if usage.name and usage.name.value:
+                if usage.name.value.lower() in unit_mappings.get(requested, {requested}):
+                    limit = usage.limit
+                    current_value = usage.current_value
+
+                    if limit is None or current_value is None:
+                        print(f"Warning: Missing limit or currentValue for {usage.name.value} in {region} for ContainerApps.")
+                        continue
+
+                    try:
+                        limit_val = float(limit)
+                        current_val = float(current_value)
+                    except ValueError:
+                        print(f"Warning: Non-numeric limit/currentValue for {usage.name.value} in {region} for ContainerApps.")
+                        continue
+                    
+                    quota_info = QuotaInfo(
+                        unit=capacity["unit"],
+                        current_usage=current_val,
+                        limit=limit_val,
+                        required=float(capacity["required"])
+                    )
+                    result.quotas[capacity["unit"]] = quota_info
+                    found_quota = True
+                    break
+            else:
+                print(f"Warning: Malformed usage object encountered for ContainerApps in {region}")
+
+        if not found_quota:
+            print(f"Warning: Quota unit '{capacity['unit']}' not found for {resource_type} in {region}. Available: {[u.name.value for u in usages if hasattr(u, 'name') and u.name and hasattr(u.name, 'value')]}")
+            # If quota unit not found, mark as insufficient
+            result.quotas[capacity["unit"]] = QuotaInfo(
+                unit=capacity["unit"],
+                current_usage=0,
+                limit=0,
+                required=float(capacity["required"])
+            )
+
         return result
 
 class QuotaClientAdapter(ProviderAdapter):
