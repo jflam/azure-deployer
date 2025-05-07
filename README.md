@@ -129,7 +129,56 @@ services:
       administratorLogin: pgadmin
       version: "16"
       storageGB: 32
+
+  - name: my-container-env
+    type: Microsoft.App/managedEnvironments
+    sku: Consumption
+    capacity:
+      unit: Cores
+      required: 4
+      environment_name: my-container-env  # Required for core quota checking
+      resource_group: my-app-rg           # Required for core quota checking
 ```
+
+## Quota Checking Details
+
+### Azure Container Apps Core Quotas
+
+Azure Container Apps CPU core quotas are managed at the environment level, not at the region level. For Container Apps environments, the core quota is typically set to 100 cores per environment by default. The provisioner handles this special case as follows:
+
+1. When checking core quotas for `Microsoft.App/managedEnvironments`:
+   - The tool looks for `environment_name` and `resource_group` in the capacity section
+   - It attempts to query the environment-level quotas using these values
+   - If the environment doesn't exist yet (common during planning), it uses the default Azure limit of 100 cores
+
+2. Required capacity configuration for Container Apps environments:
+
+```yaml
+capacity:
+  unit: Cores
+  required: 4  # Number of cores needed
+  environment_name: my-container-env  # Name of the environment (can be planned)
+  resource_group: my-resource-group   # Resource group for the environment
+```
+
+This approach allows accurate quota checking for both existing environments and environments that will be created as part of the deployment.
+
+### Quota Analysis Output Format
+
+The quota analysis output displays quota information in a user-friendly format:
+
+1. **Required/Available Format**: Values are shown as "Required/Available" making it clear how much quota is needed versus how much is available.
+2. **Color-Coded Values**: 
+   - **Green** values indicate sufficient quota (Required ≤ Available)
+   - **Red** values indicate insufficient quota (Required > Available)
+3. **Comprehensive Legend**: The output includes a detailed legend explaining the meaning of the colors and status indicators.
+
+1. For Container Apps (`Microsoft.App/managedEnvironments`), it checks quotas at the environment level when `unit: Cores` is specified.
+2. Required properties for Container Apps core quota checking:
+   - `environment_name`: Name of the environment (must match the service name)
+   - `resource_group`: Resource group containing the environment
+
+By default, Azure allocates 100 cores per Container Apps environment. The quota checker uses this value when querying the environment-level quota.
 
 ## Development
 

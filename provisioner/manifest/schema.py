@@ -6,6 +6,8 @@ class ServiceCapacity(BaseModel):
     """Service capacity requirements."""
     unit: str
     required: int
+    environment_name: Optional[str] = None
+    resource_group: Optional[str] = None
 
 class ServiceSecret(BaseModel):
     """Service secret reference."""

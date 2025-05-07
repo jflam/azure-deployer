@@ -62,6 +62,8 @@ services:
     capacity:
       unit: Cores
       required: 4
+      environment_name: api-env
+      resource_group: ai-starter-rg
     properties: {}
 
   # Log Analytics Workspace

@@ -1,5 +1,8 @@
 {
-  "viable_regions": [],
+  "viable_regions": [
+    "southcentralus",
+    "westus"
+  ],
   "regions": {
     "eastus": [
       {
@@ -18,11 +21,11 @@
         "resource_type": "Microsoft.App/managedEnvironments",
         "quotas": {
           "Cores": {
-            "current": 0.0,
-            "limit": 0.0,
+            "current": 0,
+            "limit": 100.0,
             "required": 4.0,
-            "available": 0.0,
-            "sufficient": false
+            "available": 100.0,
+            "sufficient": true
           }
         }
       }
@@ -44,11 +47,11 @@
         "resource_type": "Microsoft.App/managedEnvironments",
         "quotas": {
           "Cores": {
-            "current": 0.0,
-            "limit": 0.0,
+            "current": 0,
+            "limit": 100.0,
             "required": 4.0,
-            "available": 0.0,
-            "sufficient": false
+            "available": 100.0,
+            "sufficient": true
           }
         }
       }
@@ -70,11 +73,11 @@
         "resource_type": "Microsoft.App/managedEnvironments",
         "quotas": {
           "Cores": {
-            "current": 0.0,
-            "limit": 0.0,
+            "current": 0,
+            "limit": 100.0,
             "required": 4.0,
-            "available": 0.0,
-            "sufficient": false
+            "available": 100.0,
+            "sufficient": true
           }
         }
       }

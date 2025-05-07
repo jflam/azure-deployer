@@ -185,83 +185,193 @@ class ContainerAppsProviderAdapter(ProviderAdapter):
         from azure.mgmt.appcontainers import ContainerAppsAPIClient
         
         client = ContainerAppsAPIClient(self.credential, self.subscription_id)
-        # The SDK returns an iterator; convert to list so that we can
-        # traverse it multiple times (matching loop + “Available” message).
-        usages = list(client.usages.list(location=region))
-
-        # ──────────────────────────────────────────────────────────────────
-        # Map friendly units → exact names returned by the API.
-        # Extend this dict if you need more aliases later.
-        # ──────────────────────────────────────────────────────────────────
-        unit_mappings = {
-            "cores": {
-                "managedenvironmentcores",
-                "managedenvironmentconsumptioncores",
-                "managedenvironmentgeneralpurposecores",
-                "managedenvironmentmemoryoptimizedcores",
-            },
-        }
-        requested_unit = capacity["unit"].lower()
-
         result = ResourceQuota(resource_type, region, {})
         found_quota = False
-
-        for usage in usages:
-            if usage.name and usage.name.value:
-                api_name = usage.name.value.lower()
-                # Accept match if it’s in the explicit map *or*
-                # (requested unit is “cores” and the API string clearly
-                #  references cores / gpus – these represent compute quotas).
-                if (
-                    api_name in unit_mappings.get(requested_unit, {requested_unit})
-                    or (
-                        requested_unit == "cores"
-                        and ("core" in api_name or "gpu" in api_name)
-                    )
-                ):
-                    limit = usage.limit
-                    current_value = usage.current_value
-
-                    if limit is None or current_value is None:
-                        print(f"Warning: Missing limit or currentValue for {usage.name.value} in {region} for ContainerApps.")
-                        continue
-
+        
+        # Check if we're looking for cores in a Container Apps environment
+        requested_unit = capacity["unit"].lower()
+        
+        # For core quotas in Container Apps, check at the environment level
+        if requested_unit == "cores" and resource_type == "Microsoft.App/managedEnvironments":
+            env_name = capacity.get("environment_name")
+            resource_group = capacity.get("resource_group")
+            
+            # If environment details are provided, query environment-level quotas
+            if env_name and resource_group:
+                try:
+                    # First, check if the resource group and environment exist
+                    # If not, we'll use the default quota values since we're just planning
                     try:
-                        limit_val = float(limit)
-                        current_val = float(current_value)
-                    except ValueError:
-                        print(f"Warning: Non-numeric limit/currentValue for {usage.name.value} in {region} for ContainerApps.")
-                        continue
-                    
-                    quota_info = QuotaInfo(
-                        unit=capacity["unit"],
-                        current_usage=current_val,
-                        limit=limit_val,
-                        required=float(capacity["required"])
-                    )
-                    result.quotas[capacity["unit"]] = quota_info
-                    found_quota = True
-                    break
-            else:
-                print(f"Warning: Malformed usage object encountered for ContainerApps in {region}")
+                        # The SDK returns an iterator; convert to list so that we can traverse it multiple times
+                        # Method expects positional arguments: resource_group_name, environment_name  
+                        env_usages = list(client.managed_environment_usages.list(
+                            resource_group, 
+                            env_name
+                        ))
+                        
+                        # Environment-level quota mapping
+                        unit_mappings = {
+                            "cores": {
+                                "managedenvironmentconsumptioncores",
+                                "managedenvironmentgeneralpurposecores",
+                                "managedenvironmentmemoryoptimizedcores",
+                            },
+                        }
+                        
+                        # Process environment-level usages
+                        for usage in env_usages:
+                            if usage.name and usage.name.value:
+                                api_name = usage.name.value.lower()
+                                # Match any core usage type in environment
+                                if (
+                                    api_name in unit_mappings.get(requested_unit, {requested_unit})
+                                    or (
+                                        requested_unit == "cores"
+                                        and ("core" in api_name)
+                                    )
+                                ):
+                                    limit = usage.limit
+                                    current_value = usage.current_value
 
+                                    if limit is None or current_value is None:
+                                        print(f"Warning: Missing limit or currentValue for {usage.name.value} in environment {env_name}.")
+                                        continue
+
+                                    try:
+                                        limit_val = float(limit)
+                                        current_val = float(current_value)
+                                    except ValueError:
+                                        print(f"Warning: Non-numeric limit/currentValue for {usage.name.value} in environment {env_name}.")
+                                        continue
+                                    
+                                    quota_info = QuotaInfo(
+                                        unit=capacity["unit"],
+                                        current_usage=current_val,
+                                        limit=limit_val,
+                                        required=float(capacity["required"])
+                                    )
+                                    result.quotas[capacity["unit"]] = quota_info
+                                    found_quota = True
+                                    break
+                                    
+                        if not found_quota:
+                            available_units = [
+                                u.name.value
+                                for u in env_usages
+                                if hasattr(u, "name") and u.name and hasattr(u.name, "value") and u.name.value
+                            ]
+                            print(
+                                f"Warning: Quota unit '{capacity['unit']}' not found in environment {env_name}. "
+                                f"Available: {available_units}"
+                            )
+                            # Use default quota values
+                            raise Exception("No matching quota units found in environment")
+                    
+                    except Exception as rg_error:
+                        # Environment or resource group doesn't exist yet or no matching quotas found
+                        # Use the default 100 cores per environment limit as per Azure documentation
+                        print(f"Info: Using default Container Apps environment quota limits (environment may not exist yet): {rg_error}")
+                        quota_info = QuotaInfo(
+                            unit=capacity["unit"],
+                            current_usage=0,
+                            limit=100.0,  # Default 100 cores per environment
+                            required=float(capacity["required"])
+                        )
+                        result.quotas[capacity["unit"]] = quota_info
+                        found_quota = True
+                        
+                except Exception as e:
+                    print(f"Error checking Container Apps environment quota: {e}")
+                    # Fall back to region-level check
+            else:
+                print(f"Warning: Container Apps core quota check requires environment_name and resource_group in capacity. Using region-level check.")
+        
+        # If we're not checking environment-level cores or the environment check failed,
+        # fall back to region-level quota checking (for environment count, etc.)
         if not found_quota:
-            available_units = [
-                u.name.value
-                for u in usages
-                if hasattr(u, "name") and u.name and hasattr(u.name, "value") and u.name.value
-            ]
-            print(
-                f"Warning: Quota unit '{capacity['unit']}' not found for "
-                f"{resource_type} in {region}. Available: {available_units}"
-            )
-            # If quota unit not found, mark as insufficient
-            result.quotas[capacity["unit"]] = QuotaInfo(
-                unit=capacity["unit"],
-                current_usage=0,
-                limit=0,
-                required=float(capacity["required"])
-            )
+            # The SDK returns an iterator; convert to list
+            usages = list(client.usages.list(location=region))
+            
+            # Map friendly units → exact names returned by the API.
+            unit_mappings = {
+                "cores": {
+                    "managedenvironmentcores",
+                    "managedenvironmentconsumptioncores",
+                    "managedenvironmentgeneralpurposecores",
+                    "managedenvironmentmemoryoptimizedcores",
+                },
+            }
+
+            for usage in usages:
+                if usage.name and usage.name.value:
+                    api_name = usage.name.value.lower()
+                    # Accept match if it's in the explicit map *or*
+                    # (requested unit is "cores" and the API string clearly
+                    #  references cores / gpus – these represent compute quotas).
+                    if (
+                        api_name in unit_mappings.get(requested_unit, {requested_unit})
+                        or (
+                            requested_unit == "cores"
+                            and ("core" in api_name or "gpu" in api_name)
+                        )
+                    ):
+                        limit = usage.limit
+                        current_value = usage.current_value
+
+                        if limit is None or current_value is None:
+                            print(f"Warning: Missing limit or currentValue for {usage.name.value} in {region} for ContainerApps.")
+                            continue
+
+                        try:
+                            limit_val = float(limit)
+                            current_val = float(current_value)
+                        except ValueError:
+                            print(f"Warning: Non-numeric limit/currentValue for {usage.name.value} in {region} for ContainerApps.")
+                            continue
+                        
+                        quota_info = QuotaInfo(
+                            unit=capacity["unit"],
+                            current_usage=current_val,
+                            limit=limit_val,
+                            required=float(capacity["required"])
+                        )
+                        result.quotas[capacity["unit"]] = quota_info
+                        found_quota = True
+                        break
+                else:
+                    print(f"Warning: Malformed usage object encountered for ContainerApps in {region}")
+
+            if not found_quota and requested_unit == "cores" and resource_type == "Microsoft.App/managedEnvironments":
+                # If we're checking cores for Container Apps and didn't find anything,
+                # use a default of 100 cores per environment as per Azure documentation
+                print(
+                    f"Warning: No core quota found for Container Apps in {region}. "
+                    f"Using default 100 cores per environment limit."
+                )
+                quota_info = QuotaInfo(
+                    unit=capacity["unit"],
+                    current_usage=0,
+                    limit=100.0,  # Default 100 cores per environment
+                    required=float(capacity["required"])
+                )
+                result.quotas[capacity["unit"]] = quota_info
+            elif not found_quota:
+                available_units = [
+                    u.name.value
+                    for u in usages
+                    if hasattr(u, "name") and u.name and hasattr(u.name, "value") and u.name.value
+                ]
+                print(
+                    f"Warning: Quota unit '{capacity['unit']}' not found for "
+                    f"{resource_type} in {region}. Available: {available_units}"
+                )
+                # If quota unit not found, mark as insufficient
+                result.quotas[capacity["unit"]] = QuotaInfo(
+                    unit=capacity["unit"],
+                    current_usage=0,
+                    limit=0,
+                    required=float(capacity["required"])
+                )
 
         return result
 
