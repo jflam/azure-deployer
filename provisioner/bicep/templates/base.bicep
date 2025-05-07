@@ -21,11 +21,26 @@ resource rg 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   tags: tags
 }
 
-// Output resource group name for module scoping
+// Deploy a nested template to the resource group
+module resources 'resources.bicep' = {
+  name: 'resourcesDeployment'
+  scope: resourceGroup(resourceGroupName)
+  params: {
+    location: location
+    tags: tags
+{% if secrets %}
+{% for secret in secrets %}
+    {{ secret }}: {{ secret }}
+{% endfor %}
+{% endif %}
+  }
+}
+
+// Forward outputs from the nested module
 output rgName string = rg.name
 
-// Service resources
-{% for resource in resources %}
-{{ resource }}
-
-{% endfor %}
+// Forward key outputs from resources deployment
+output log_analytics_id string = resources.outputs.log_analytics_id
+output postgres_fqdn string = resources.outputs.postgres_fqdn
+output api_env_id string = resources.outputs.api_env_id
+output static_web_url string = resources.outputs.static_web_url

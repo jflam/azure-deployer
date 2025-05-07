@@ -56,33 +56,34 @@ class BicepGenerator:
             print(f"Debug: Generating Bicep files from {self.manifest_path}")
             print(f"Debug: Output directory: {self.output_dir}")
             
-        bicep_content = self._generate_bicep_file()
+        main_bicep_content = self._generate_main_bicep_file()
+        resources_bicep_content = self._generate_resources_bicep_file()
         params_content = self._generate_parameters_file()
         
         # Write files
-        bicep_path = Path(self.output_dir) / "main.bicep"
+        main_bicep_path = Path(self.output_dir) / "main.bicep"
+        resources_bicep_path = Path(self.output_dir) / "resources.bicep"
         params_path = Path(self.output_dir) / "main.parameters.json"
         
-        bicep_path.write_text(bicep_content)
+        main_bicep_path.write_text(main_bicep_content)
+        resources_bicep_path.write_text(resources_bicep_content)
         params_path.write_text(params_content)
         
         if self.debug:
-            print(f"Debug: Bicep file written to {bicep_path}")
+            print(f"Debug: Main Bicep file written to {main_bicep_path}")
+            print(f"Debug: Resources Bicep file written to {resources_bicep_path}")
             print(f"Debug: Parameters file written to {params_path}")
             
-        return str(bicep_path), str(params_path)
+        return str(main_bicep_path), str(params_path)
     
-    def _generate_bicep_file(self) -> str:
-        """Generate the main Bicep file content.
+    def _generate_main_bicep_file(self) -> str:
+        """Generate the main Bicep file content (subscription scope).
         
         Returns:
-            str: Bicep template content.
+            str: Main Bicep template content.
         """
         # Collect all secure parameters needed
         secure_params = self._collect_secure_parameters()
-        
-        # Generate resource snippets and track dependencies
-        resources = self._generate_resources()
         
         # Build template context
         # Check if manifest is a pydantic model or a dict
@@ -93,7 +94,6 @@ class BicepGenerator:
                 "resourceGroupName": manifest_dict.get("resource_group", {}).get("name", "default-rg"),
                 "location": manifest_dict.get("region") or "[deployment().location]",  # Fall back to deployment location if not set
                 "tags": manifest_dict.get("tags", {}),
-                "resources": resources,
                 "secrets": secure_params
             }
         else:
@@ -102,13 +102,45 @@ class BicepGenerator:
                 "resourceGroupName": self.manifest.get("resourceGroup", {}).get("name", "default-rg"),
                 "location": self.manifest.get("region") or "[deployment().location]",  # Fall back to deployment location if not set
                 "tags": self.manifest.get("tags", {}),
-                "resources": resources,
                 "secrets": secure_params
             }
         
-        # Render the full template
+        # Render the main template
         template = self.jinja_env.get_template("base.bicep")
         return template.render(**context)
+    
+    def _generate_resources_bicep_file(self) -> str:
+        """Generate the resources Bicep file content (resource group scope).
+        
+        Returns:
+            str: Resources Bicep template content.
+        """
+        # Generate resource snippets and track dependencies
+        resources = self._generate_resources()
+        
+        # Build template content
+        template_content = """// Resources Bicep template - ResourceGroup scope
+targetScope = 'resourceGroup'
+
+// Parameters
+param location string
+param tags object = {}
+
+// Secure parameters
+@secure()
+param postgresAdminPassword string = ''
+
+// Resource definitions
+"""
+        # Add all resources
+        for resource in resources:
+            template_content += resource + "\n\n"
+            
+        # Add outputs from the resources for reference in the main template
+        template_content += """// Output resource properties for reference
+"""
+        
+        return template_content
     
     def _generate_parameters_file(self) -> str:
         """Generate the parameters JSON file with Key Vault references.
@@ -116,10 +148,24 @@ class BicepGenerator:
         Returns:
             str: Parameters file content.
         """
-        template = self.jinja_env.get_template("parameters.json")
+        # Get parameters from manifest
+        if hasattr(self.manifest, "model_dump"):
+            manifest_dict = self.manifest.model_dump()
+            location = manifest_dict.get("region", "")
+            resource_group_name = manifest_dict.get("resource_group", {}).get("name", "default-rg")
+            tags = manifest_dict.get("tags", {})
+        else:
+            location = self.manifest.get("region", "")
+            resource_group_name = self.manifest.get("resourceGroup", {}).get("name", "default-rg")
+            tags = self.manifest.get("tags", {})
         
-        # We're using a fixed template for simplicity in this implementation
-        return template.render()
+        # Process the template
+        template = self.jinja_env.get_template("parameters.json")
+        return template.render(
+            location=location,
+            resourceGroupName=resource_group_name,
+            tags=tags
+        )
     
     def _collect_secure_parameters(self) -> Set[str]:
         """Collect all secure parameters that need to be declared in the Bicep file.

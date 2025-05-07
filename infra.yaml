@@ -1,17 +1,18 @@
 metadata:
   name: ai-starter-stack
   description: Static web + API + Postgres + KV + monitoring
-  version: 1.1.0
+  version: 1.1.1
 
 resourceGroup:
-  name: ai-starter-rg
-  region: ""  # Will be selected by quota checker
+  name: ai-starter-rg2
+  region: "centralus"  # Will be selected by quota checker
 
 # Region selection behavior
-region: ""  # Leave blank for quota workflow to pick one
+region: "centralus"  # Leave blank for quota workflow to pick one
 allowedRegions: [
   "eastus", 
   "westus", 
+  "centralus",
   "southcentralus"
 ]  
 
@@ -63,7 +64,7 @@ services:
       unit: Cores
       required: 4
       environment_name: api-env
-      resource_group: ai-starter-rg
+      resource_group: ai-starter-rg2
     properties: {}
 
   # Log Analytics Workspace

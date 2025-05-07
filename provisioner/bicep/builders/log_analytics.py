@@ -51,10 +51,12 @@ class LogAnalyticsBuilder:
         )
         
         # Generate Bicep code
+        # Use resource name without hyphens for the Bicep identifier
+        safe_name = resource.name.replace('-', '_')
         lines = [
-            f"resource {resource.name} '{resource.type}@{resource.api_version}' = {{",
+            f"resource {safe_name} '{resource.type}@{resource.api_version}' = {{",
             f"  name: '{resource.name}'",
-            f"  location: '{resource.location}'"
+            f"  location: location"
         ]
         
         # Add SKU
@@ -94,11 +96,17 @@ class LogAnalyticsBuilder:
         lines.append("}")
         
         # Add outputs for workspace ID and primary key (needed by other services)
+        safe_name = resource.name.replace('-', '_')
+        output_id = f"{safe_name}_id"
+        output_customer_id = f"{safe_name}_customer_id"
+        output_key = f"{safe_name}_primary_key"
         lines.extend([
             "",
-            f"output {resource.name}Id string = {resource.name}.id",
-            f"output {resource.name}CustomerId string = {resource.name}.properties.customerId",
-            f"output {resource.name}PrimarySharedKey string = listKeys({resource.name}.id).primarySharedKey"
+            f"output {output_id} string = {safe_name}.id",
+            f"output {output_customer_id} string = {safe_name}.properties.customerId",
+            f"@description('Primary shared key for Log Analytics - Note: Contains sensitive information')",
+            f"@secure()",
+            f"output {output_key} string = listKeys({safe_name}.id, {safe_name}.apiVersion).primarySharedKey"
         ])
         
         return "\n".join(lines)

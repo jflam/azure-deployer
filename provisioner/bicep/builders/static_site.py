@@ -71,10 +71,12 @@ class StaticSiteBuilder:
         )
         
         # Generate Bicep code
+        # Use resource name without hyphens for the Bicep identifier
+        safe_name = resource.name.replace('-', '_')
         lines = [
-            f"resource {resource.name} '{resource.type}@{resource.api_version}' = {{",
+            f"resource {safe_name} '{resource.type}@{resource.api_version}' = {{",
             f"  name: '{resource.name}'",
-            f"  location: '{resource.location}'"
+            f"  location: location"
         ]
         
         # Add SKU
@@ -120,10 +122,12 @@ class StaticSiteBuilder:
         
         lines.append("}")
         
-        # Add an output for the static site URL
+        # Add an output for the static site URL (using safe name for reference)
+        safe_name = resource.name.replace('-', '_')
+        output_name = f"{safe_name}_url"
         lines.extend([
             "",
-            f"output {resource.name}Url string = {resource.name}.properties.defaultHostname"
+            f"output {output_name} string = {safe_name}.properties.defaultHostname"
         ])
         
         return "\n".join(lines)

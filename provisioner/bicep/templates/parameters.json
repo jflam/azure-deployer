@@ -3,15 +3,16 @@
     "contentVersion": "1.0.0.0",
     "parameters": {
         "location": {
-            "value": ""
+            "value": "{{location}}"
         },
         "resourceGroupName": {
-            "value": "ai-starter-rg"
+            "value": "{{resourceGroupName}}"
         },
         "tags": {
-            "value": {
-                "environment": "dev"
-            }
+            "value": {{tags | tojson}}
+        },
+        "postgresAdminPassword": {
+            "value": "TemporaryPassword123!"
         }
     }
 }

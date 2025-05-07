@@ -64,11 +64,12 @@ class PostgresBuilder:
         )
         
         # Generate Bicep code
+        # Use resource name without hyphens for the Bicep identifier
+        safe_name = resource.name.replace('-', '_')
         lines = [
-            # Removed secure param declaration since it's declared at the top level
-            f"resource {resource.name} '{resource.type}@{resource.api_version}' = {{",
+            f"resource {safe_name} '{resource.type}@{resource.api_version}' = {{",
             f"  name: '{resource.name}'",
-            f"  location: '{resource.location}'"
+            f"  location: location"
         ]
         
         # Add SKU
@@ -101,6 +102,9 @@ class PostgresBuilder:
         for k, v in backup.items():
             if isinstance(v, str):
                 lines.append(f"      {k}: '{v}'")
+            elif isinstance(v, bool):
+                # Ensure boolean values are lowercase for Bicep
+                lines.append(f"      {k}: {str(v).lower()}")
             else:
                 lines.append(f"      {k}: {v}")
         lines.append("    }")
@@ -134,11 +138,16 @@ class PostgresBuilder:
         
         lines.append("}")
         
-        # Add outputs for connection string and server FQDN
+        # Add outputs for connection string and server FQDN (using safe names)
+        safe_name = resource.name.replace('-', '_')
+        output_fqdn = f"{safe_name}_fqdn"
+        output_conn = f"{safe_name}_connection_string"
         lines.extend([
             "",
-            f"output {resource.name}Fqdn string = {resource.name}.properties.fullyQualifiedDomainName",
-            f"output {resource.name}ConnectionString string = 'postgresql://${{{resource.name}.properties.administratorLogin}}:${{passwordToEscape}}@${{{resource.name}.properties.fullyQualifiedDomainName}}:5432/postgres?sslmode=require'"
+            f"output {output_fqdn} string = {safe_name}.properties.fullyQualifiedDomainName",
+            f"@description('Connection string for PostgreSQL - Note: Contains sensitive information')",
+            f"@secure()",
+            f"output {output_conn} string = 'postgresql://${{{safe_name}.properties.administratorLogin}}:${{{password_param_name}}}@${{{safe_name}.properties.fullyQualifiedDomainName}}:5432/postgres?sslmode=require'"
         ])
         
         return "\n".join(lines)

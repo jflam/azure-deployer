@@ -75,10 +75,12 @@ class ContainerEnvBuilder:
         lines = []
         
         # Resource declaration
+        # Use resource name without hyphens for the Bicep identifier
+        safe_name = resource.name.replace('-', '_')
         lines.extend([
-            f"resource {resource.name} '{resource.type}@{resource.api_version}' = {{",
+            f"resource {safe_name} '{resource.type}@{resource.api_version}' = {{",
             f"  name: '{resource.name}'",
-            f"  location: '{resource.location}'"
+            f"  location: location"
         ])
         
         # Add SKU
@@ -114,9 +116,11 @@ class ContainerEnvBuilder:
             lines.append("    appLogsConfiguration: {")
             lines.append(f"      destination: '{app_logs['destination']}'")
             if app_logs.get("logAnalyticsConfiguration"):
+                # Use safe name for log analytics reference
+                log_analytics_safe_name = log_analytics_name.replace('-', '_') if log_analytics_name else 'log_analytics'
                 lines.append("      logAnalyticsConfiguration: {")
-                lines.append(f"        customerId: {app_logs['logAnalyticsConfiguration']['customerId']}")
-                lines.append(f"        sharedKey: {app_logs['logAnalyticsConfiguration']['sharedKey']}")
+                lines.append(f"        customerId: {log_analytics_safe_name}.properties.customerId")
+                lines.append(f"        sharedKey: listKeys({log_analytics_safe_name}.id, {log_analytics_safe_name}.apiVersion).primarySharedKey")
                 lines.append("      }")
             lines.append("    }")
         
@@ -133,16 +137,21 @@ class ContainerEnvBuilder:
         if depends_on:
             lines.append("  dependsOn: [")
             for dep in depends_on:
-                lines.append(f"    {dep}")
+                # Clean up dependency name by removing hyphens
+                safe_dep = dep.replace('-', '_')
+                lines.append(f"    {safe_dep}")
             lines.append("  ]")
         
         lines.append("}")
         
-        # Add outputs for the environment ID
+        # Add outputs for the environment ID (using safe names)
+        safe_name = resource.name.replace('-', '_')
+        output_id = f"{safe_name}_id"
+        output_domain = f"{safe_name}_default_domain"
         lines.extend([
             "",
-            f"output {resource.name}Id string = {resource.name}.id",
-            f"output {resource.name}DefaultDomain string = {resource.name}.properties.defaultDomain"
+            f"output {output_id} string = {safe_name}.id",
+            f"output {output_domain} string = {safe_name}.properties.defaultDomain"
         ])
         
         return "\n".join(lines)
