@@ -1,9 +1,4 @@
 {
-  "description": "Template configuration for this project. See https://www.codebuff.com/config for all options.",
-  "startupProcesses": [
-    {
-      "command": "npm run dev",
-      "name": "web"
-    }
-  ]
+  "description": "Azure Provisioner - Quota-aware Bicep generator and region selector",
+  "startupProcesses": []
 }
