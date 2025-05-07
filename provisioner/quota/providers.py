@@ -182,15 +182,17 @@ class ContainerAppsProviderAdapter(ProviderAdapter):
     """Adapter for Microsoft.App quota checks."""
     
     def check_quota(self, resource_type: str, region: str, capacity: Dict) -> ResourceQuota:
-        from azure.mgmt.appcontainers import ContainerAppsAPIClient  # Corrected import
+        from azure.mgmt.appcontainers import ContainerAppsAPIClient
         
-        client = ContainerAppsAPIClient(self.credential, self.subscription_id)  # Corrected client
-        usages = client.usages.list(location=region)
-        
-        result = ResourceQuota(resource_type, region, {})
-        found_quota = False
-        
-        # Container Apps always reports count-based quotas whose names start with “ManagedEnvironment…”
+        client = ContainerAppsAPIClient(self.credential, self.subscription_id)
+        # The SDK returns an iterator; convert to list so that we can
+        # traverse it multiple times (matching loop + “Available” message).
+        usages = list(client.usages.list(location=region))
+
+        # ──────────────────────────────────────────────────────────────────
+        # Map friendly units → exact names returned by the API.
+        # Extend this dict if you need more aliases later.
+        # ──────────────────────────────────────────────────────────────────
         unit_mappings = {
             "cores": {
                 "managedenvironmentcores",
@@ -198,13 +200,25 @@ class ContainerAppsProviderAdapter(ProviderAdapter):
                 "managedenvironmentgeneralpurposecores",
                 "managedenvironmentmemoryoptimizedcores",
             },
-            # add more mappings as needed
         }
-        requested = capacity["unit"].lower()
+        requested_unit = capacity["unit"].lower()
+
+        result = ResourceQuota(resource_type, region, {})
+        found_quota = False
 
         for usage in usages:
             if usage.name and usage.name.value:
-                if usage.name.value.lower() in unit_mappings.get(requested, {requested}):
+                api_name = usage.name.value.lower()
+                # Accept match if it’s in the explicit map *or*
+                # (requested unit is “cores” and the API string clearly
+                #  references cores / gpus – these represent compute quotas).
+                if (
+                    api_name in unit_mappings.get(requested_unit, {requested_unit})
+                    or (
+                        requested_unit == "cores"
+                        and ("core" in api_name or "gpu" in api_name)
+                    )
+                ):
                     limit = usage.limit
                     current_value = usage.current_value
 
@@ -232,7 +246,15 @@ class ContainerAppsProviderAdapter(ProviderAdapter):
                 print(f"Warning: Malformed usage object encountered for ContainerApps in {region}")
 
         if not found_quota:
-            print(f"Warning: Quota unit '{capacity['unit']}' not found for {resource_type} in {region}. Available: {[u.name.value for u in usages if hasattr(u, 'name') and u.name and hasattr(u.name, 'value')]}")
+            available_units = [
+                u.name.value
+                for u in usages
+                if hasattr(u, "name") and u.name and hasattr(u.name, "value") and u.name.value
+            ]
+            print(
+                f"Warning: Quota unit '{capacity['unit']}' not found for "
+                f"{resource_type} in {region}. Available: {available_units}"
+            )
             # If quota unit not found, mark as insufficient
             result.quotas[capacity["unit"]] = QuotaInfo(
                 unit=capacity["unit"],

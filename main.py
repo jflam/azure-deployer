@@ -70,7 +70,11 @@ def quota_check(
                         quota = resource_quotas[resource_type]
                         quota_summary = []
                         for unit, info in quota.quotas.items():
-                            quota_summary.append(f"{unit}: {info.available}/{info.required}")
+                            # Format in red for insufficient, green for sufficient
+                            if info.is_sufficient:
+                                quota_summary.append(f"{unit}: [green]{info.required}/{info.available}[/]")
+                            else:
+                                quota_summary.append(f"{unit}: [red]{info.required}/{info.available}[/]")
                         row.append("\n".join(quota_summary))
                     else:
                         row.append("")
@@ -78,6 +82,16 @@ def quota_check(
                 table.add_row(*row)
             
             console.print(table)
+            
+            # Add a legend to explain the quota analysis
+            legend_table = Table(title="Legend", show_header=False, box=None)
+            legend_table.add_column("Description")
+            legend_table.add_row("[cyan]Resource values format:[/] [bold]Required/Available[/] - Amount required for deployment / Amount available in region")
+            legend_table.add_row("[green]✓ VIABLE[/] - Region has sufficient quota for all resources")
+            legend_table.add_row("[red]❌ INSUFFICIENT QUOTA[/] - Region lacks required quota for one or more resources")
+            legend_table.add_row("[green]GREEN values[/] - Sufficient quota available (Required ≤ Available)")
+            legend_table.add_row("[red]RED values[/] - Insufficient quota available (Required > Available)")
+            console.print(legend_table)
             
             # Print viable regions summary
             if analysis.viable_regions:
