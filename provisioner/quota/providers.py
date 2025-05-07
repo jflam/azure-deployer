@@ -270,7 +270,10 @@ class ContainerAppsProviderAdapter(ProviderAdapter):
                     except Exception as rg_error:
                         # Environment or resource group doesn't exist yet or no matching quotas found
                         # Use the default 100 cores per environment limit as per Azure documentation
-                        print(f"Info: Using default Container Apps environment quota limits (environment may not exist yet): {rg_error}")
+                        error_str = str(rg_error)
+                        # Format error message with indentation for better readability
+                        formatted_error = error_str.replace("\n", "\n    ")
+                        print(f"Warning: Using default Container Apps environment quota limits (environment may not exist yet):\n    {formatted_error}")
                         quota_info = QuotaInfo(
                             unit=capacity["unit"],
                             current_usage=0,
