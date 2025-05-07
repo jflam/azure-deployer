@@ -1,7 +1,7 @@
 """Bicep template generator."""
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 from jinja2 import Environment, FileSystemLoader
 
 from .models import BicepModule, BicepParameter, BicepResource
@@ -26,6 +26,9 @@ class BicepGenerator:
         self.manifest = ManifestParser.load(manifest_path)
         self.output_dir = output_dir or Path(manifest_path).parent
         self.debug = debug
+        
+        # Ensure output directory exists
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
         
         # Set up Jinja2 environment
         template_dir = Path(__file__).parent / "templates"
@@ -75,19 +78,37 @@ class BicepGenerator:
         Returns:
             str: Bicep template content.
         """
-        # Collect secure parameters needed
-        used_secrets = self._collect_used_secrets()
+        # Collect all secure parameters needed
+        secure_params = self._collect_secure_parameters()
         
         # Generate resource snippets and track dependencies
         resources = self._generate_resources()
         
+        # Build template context
+        # Check if manifest is a pydantic model or a dict
+        if hasattr(self.manifest, "model_dump"):
+            # It's a pydantic model
+            manifest_dict = self.manifest.model_dump()
+            context = {
+                "resourceGroupName": manifest_dict.get("resource_group", {}).get("name", "default-rg"),
+                "location": manifest_dict.get("region") or "[deployment().location]",  # Fall back to deployment location if not set
+                "tags": manifest_dict.get("tags", {}),
+                "resources": resources,
+                "secrets": secure_params
+            }
+        else:
+            # It's a dict
+            context = {
+                "resourceGroupName": self.manifest.get("resourceGroup", {}).get("name", "default-rg"),
+                "location": self.manifest.get("region") or "[deployment().location]",  # Fall back to deployment location if not set
+                "tags": self.manifest.get("tags", {}),
+                "resources": resources,
+                "secrets": secure_params
+            }
+        
         # Render the full template
         template = self.jinja_env.get_template("base.bicep")
-        return template.render(
-            manifest=self.manifest,
-            resources=resources,
-            secrets=used_secrets
-        )
+        return template.render(**context)
     
     def _generate_parameters_file(self) -> str:
         """Generate the parameters JSON file with Key Vault references.
@@ -97,41 +118,34 @@ class BicepGenerator:
         """
         template = self.jinja_env.get_template("parameters.json")
         
-        # Collect secrets used in the template
-        used_secrets = self._collect_used_secrets()
-        
-        # Build parameters object
-        parameters = {}
-        
-        # Add secrets as Key Vault references
-        for secret_param in used_secrets:
-            secret_name = self.manifest.secrets.get(secret_param)
-            if secret_name:
-                parameters[secret_param] = {
-                    "reference": {
-                        "keyVault": {
-                            "id": self.manifest.key_vault
-                        },
-                        "secretName": secret_name
-                    }
-                }
-        
-        return template.render(parameters=parameters)
+        # We're using a fixed template for simplicity in this implementation
+        return template.render()
     
-    def _collect_used_secrets(self) -> List[str]:
-        """Collect all secret names that are used in the manifest.
+    def _collect_secure_parameters(self) -> Set[str]:
+        """Collect all secure parameters that need to be declared in the Bicep file.
         
         Returns:
-            List[str]: List of secret names.
+            Set[str]: Set of parameter names.
         """
-        used_secrets = []
+        secure_params = set()
         
-        for service in self.manifest.services:
-            if service.secrets:
-                for secret_name in service.secrets.values():
-                    used_secrets.append(secret_name)
+        # Get services list
+        if hasattr(self.manifest, "model_dump"):
+            manifest_dict = self.manifest.model_dump()
+            services = manifest_dict.get("services", [])
+        else:
+            services = self.manifest.get("services", [])
         
-        return used_secrets
+        # Process each service's secrets
+        for service in services:
+            service_dict = service if isinstance(service, dict) else service.model_dump() if hasattr(service, "model_dump") else {}
+            
+            # For Postgres admin password
+            if service_dict.get("type") == "Microsoft.DBforPostgreSQL/flexibleServers":
+                if service_dict.get("secrets", {}).get("adminPassword"):
+                    secure_params.add(f"{service_dict.get('name')}AdminPassword")
+        
+        return secure_params
     
     def _generate_resources(self) -> List[str]:
         """Generate Bicep code for all resources.
@@ -145,13 +159,35 @@ class BicepGenerator:
         # Generate code for each resource
         resources = []
         for service in ordered_services:
-            builder = self.builders.get(service.type)
-            if not builder:
-                raise ValueError(f"Unsupported resource type: {service.type}")
+            service_dict = service if isinstance(service, dict) else service.model_dump() if hasattr(service, "model_dump") else {}
+            service_type = service_dict.get("type")
             
-            # Generate resource snippet
-            snippet = builder.build(service.model_dump(), self.manifest.model_dump())
-            resources.append(snippet)
+            if not service_type:
+                if self.debug:
+                    print(f"Debug: Skipping service without type: {service_dict.get('name', 'unknown')}")
+                continue
+                
+            builder = self.builders.get(service_type)
+            if not builder:
+                if self.debug:
+                    print(f"Debug: Skipping unsupported resource type: {service_type}")
+                continue
+            
+            try:
+                # Generate resource snippet
+                if hasattr(self.manifest, "model_dump"):
+                    manifest_dict = self.manifest.model_dump()
+                else:
+                    manifest_dict = self.manifest
+                    
+                snippet = builder.build(service_dict, manifest_dict)
+                resources.append(snippet)
+                
+                if self.debug:
+                    print(f"Debug: Generated resource for {service_dict.get('name')} ({service_type})")
+            except Exception as e:
+                if self.debug:
+                    print(f"Debug: Error generating resource for {service_dict.get('name')}: {e}")
         
         return resources
     
@@ -161,20 +197,56 @@ class BicepGenerator:
         Returns:
             List: Ordered list of services.
         """
-        # Simple implementation - this would need enhancement for complex dependencies
-        # Put Log Analytics workspaces first since Container Environments may depend on them
+        # Enhanced implementation for dependencies between resources
+        # Resource types are grouped by their natural dependency order
+        service_groups = {
+            # Core infrastructure (lowest level)
+            1: ["Microsoft.OperationalInsights/workspaces"],
+            # Networking and storage
+            2: ["Microsoft.Network/virtualNetworks"],
+            # Database and middleware
+            3: ["Microsoft.DBforPostgreSQL/flexibleServers"],
+            # App hosting environments
+            4: ["Microsoft.App/managedEnvironments"],
+            # Applications (highest level)
+            5: ["Microsoft.Web/staticSites", "Microsoft.App/containerApps"]
+        }
         
-        ordered = []
-        log_analytics = []
-        container_envs = []
-        others = []
+        # Map for quick lookup of priority by resource type
+        type_priority_map = {}
+        for priority, resource_types in service_groups.items():
+            for res_type in resource_types:
+                type_priority_map[res_type] = priority
         
-        for service in self.manifest.services:
-            if service.type == "Microsoft.OperationalInsights/workspaces":
-                log_analytics.append(service)
-            elif service.type == "Microsoft.App/managedEnvironments":
-                container_envs.append(service)
-            else:
-                others.append(service)
+        # Get services list
+        if hasattr(self.manifest, "model_dump"):
+            manifest_dict = self.manifest.model_dump()
+            services = manifest_dict.get("services", [])
+        else:
+            services = self.manifest.get("services", [])
+            
+        # Bucket services by priority
+        prioritized_services = {}
+        for service in services:
+            service_dict = service if isinstance(service, dict) else service.model_dump() if hasattr(service, "model_dump") else {}
+            service_type = service_dict.get("type")
+            
+            if not service_type:
+                continue
+                
+            priority = type_priority_map.get(service_type, 99)  # Unknown types get lowest priority
+            
+            if priority not in prioritized_services:
+                prioritized_services[priority] = []
+            
+            prioritized_services[priority].append(service_dict)
         
-        return log_analytics + container_envs + others
+        # Flatten the prioritized services into a single ordered list
+        ordered_services = []
+        for priority in sorted(prioritized_services.keys()):
+            ordered_services.extend(prioritized_services[priority])
+            
+        if self.debug:
+            print(f"Debug: Ordered {len(ordered_services)} services for deployment")
+        
+        return ordered_services

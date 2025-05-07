@@ -46,4 +46,5 @@ class Manifest(BaseModel):
     deployment: Optional[Dict[str, str]] = None
     tags: Dict[str, str] = Field(default_factory=dict)
     key_vault: Optional[str] = Field(default=None, alias='keyVault')
+    secrets: Dict[str, str] = Field(default_factory=dict)
     services: List[Service]

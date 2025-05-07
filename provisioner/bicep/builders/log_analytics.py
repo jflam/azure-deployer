@@ -66,19 +66,22 @@ class LogAnalyticsBuilder:
         
         # Add properties
         lines.append("  properties: {")
-        for key, value in resource.properties.items():
-            if isinstance(value, dict):
-                lines.append(f"    {key}: {{")
-                for k, v in value.items():
-                    if isinstance(v, str):
-                        lines.append(f"      {k}: '{v}'")
-                    else:
-                        lines.append(f"      {k}: {v}")
-                lines.append("    }")
-            elif isinstance(value, str):
-                lines.append(f"    {key}: '{value}'")
-            else:
-                lines.append(f"    {key}: {value}")
+        
+        # Add retention days
+        lines.append(f"    retentionInDays: {resource.properties.get('retentionInDays', 30)}")
+        
+        # Add features
+        features = resource.properties.get("features", {})
+        if features:
+            lines.append("    features: {")
+            for k, v in features.items():
+                lines.append(f"      {k}: {str(v).lower()}")
+            lines.append("    }")
+        
+        # Add network access settings
+        lines.append(f"    publicNetworkAccessForIngestion: '{resource.properties.get('publicNetworkAccessForIngestion', 'Enabled')}'")
+        lines.append(f"    publicNetworkAccessForQuery: '{resource.properties.get('publicNetworkAccessForQuery', 'Enabled')}'")
+        
         lines.append("  }")
         
         # Add tags
@@ -89,5 +92,13 @@ class LogAnalyticsBuilder:
             lines.append("  }")
         
         lines.append("}")
+        
+        # Add outputs for workspace ID and primary key (needed by other services)
+        lines.extend([
+            "",
+            f"output {resource.name}Id string = {resource.name}.id",
+            f"output {resource.name}CustomerId string = {resource.name}.properties.customerId",
+            f"output {resource.name}PrimarySharedKey string = listKeys({resource.name}.id).primarySharedKey"
+        ])
         
         return "\n".join(lines)

@@ -27,15 +27,12 @@ class PostgresBuilder:
             **(service.get("properties", {}).get("tags", {}))
         }
         
-        # Get properties
+        # Get properties and secrets
         props = service.get("properties", {})
+        secrets = service.get("secrets", {})
         
         # Create admin password parameter
-        admin_password_param = BicepParameter(
-            name=f"{service['name']}AdminPassword",
-            type="string",
-            secure=True
-        )
+        password_param_name = f"{service['name']}AdminPassword"
         
         # Create resource
         resource = BicepResource(
@@ -61,16 +58,14 @@ class PostgresBuilder:
                     "privateDnsZoneArmResourceId": props.get("network", {}).get("privateDnsZoneResourceId", "")
                 },
                 "administratorLogin": props.get("administratorLogin", "pgadmin"),
-                "administratorLoginPassword": f"@secure().{admin_password_param.name}"
+                "administratorLoginPassword": f"{password_param_name}"
             },
             tags=tags
         )
         
         # Generate Bicep code
         lines = [
-            f"@secure()",
-            f"param {admin_password_param.name} string",
-            "",
+            # Removed secure param declaration since it's declared at the top level
             f"resource {resource.name} '{resource.type}@{resource.api_version}' = {{",
             f"  name: '{resource.name}'",
             f"  location: '{resource.location}'"
@@ -86,22 +81,48 @@ class PostgresBuilder:
         
         # Add properties
         lines.append("  properties: {")
-        for key, value in resource.properties.items():
-            if isinstance(value, dict):
-                lines.append(f"    {key}: {{")
-                for k, v in value.items():
+        
+        # Add version
+        lines.append(f"    version: '{resource.properties['version']}'")
+        
+        # Add storage
+        storage = resource.properties.get("storage", {})
+        lines.append("    storage: {")
+        for k, v in storage.items():
+            if isinstance(v, str):
+                lines.append(f"      {k}: '{v}'")
+            else:
+                lines.append(f"      {k}: {v}")
+        lines.append("    }")
+        
+        # Add backup
+        backup = resource.properties.get("backup", {})
+        lines.append("    backup: {")
+        for k, v in backup.items():
+            if isinstance(v, str):
+                lines.append(f"      {k}: '{v}'")
+            else:
+                lines.append(f"      {k}: {v}")
+        lines.append("    }")
+        
+        # Add network if delegatedSubnetResourceId is not empty
+        network = resource.properties.get("network", {})
+        if network.get("delegatedSubnetResourceId"):
+            lines.append("    network: {")
+            for k, v in network.items():
+                if v:  # Only add non-empty values
                     if isinstance(v, str):
                         lines.append(f"      {k}: '{v}'")
                     else:
                         lines.append(f"      {k}: {v}")
-                lines.append("    }")
-            elif isinstance(value, str):
-                if value.startswith("@secure()"):
-                    lines.append(f"    {key}: {value}")
-                else:
-                    lines.append(f"    {key}: '{value}'")
-            else:
-                lines.append(f"    {key}: {value}")
+            lines.append("    }")
+        
+        # Add admin login
+        lines.append(f"    administratorLogin: '{resource.properties['administratorLogin']}'")
+        
+        # Add admin password
+        lines.append(f"    administratorLoginPassword: {password_param_name}")
+        
         lines.append("  }")
         
         # Add tags
@@ -112,5 +133,12 @@ class PostgresBuilder:
             lines.append("  }")
         
         lines.append("}")
+        
+        # Add outputs for connection string and server FQDN
+        lines.extend([
+            "",
+            f"output {resource.name}Fqdn string = {resource.name}.properties.fullyQualifiedDomainName",
+            f"output {resource.name}ConnectionString string = 'postgresql://${{{resource.name}.properties.administratorLogin}}:${{passwordToEscape}}@${{{resource.name}.properties.fullyQualifiedDomainName}}:5432/postgres?sslmode=require'"
+        ])
         
         return "\n".join(lines)

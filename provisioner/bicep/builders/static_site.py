@@ -20,6 +20,7 @@ class StaticSiteBuilder:
             str: Bicep resource definition.
         """
         region = service.get("region") or manifest.get("region")
+        resource_group_name = manifest.get("resourceGroup", {}).get("name")
         
         # Merge tags
         tags = {
@@ -41,6 +42,22 @@ class StaticSiteBuilder:
                 "type": "SystemAssigned"
             }
         
+        # Extract specific properties for Static Web Apps
+        props = service.get("properties", {})
+        properties = {}
+        
+        # Handle repository settings if present
+        if props.get("repositoryUrl"):
+            properties.update({
+                "repositoryUrl": props.get("repositoryUrl"),
+                "branch": props.get("branch", "main"),
+                "provider": props.get("provider", "GitHub")
+            })
+        
+        # Handle build configuration if present
+        if props.get("buildProperties"):
+            properties["buildProperties"] = props.get("buildProperties")
+        
         # Create resource
         resource = BicepResource(
             name=service["name"],
@@ -49,7 +66,7 @@ class StaticSiteBuilder:
             location=region,
             sku=sku,
             identity=identity,
-            properties=service.get("properties", {}),
+            properties=properties,
             tags=tags
         )
         
@@ -77,10 +94,18 @@ class StaticSiteBuilder:
             ])
         
         # Add properties if present
-        if resource.properties:
+        if properties:
             lines.append("  properties: {")
-            for key, value in resource.properties.items():
-                if isinstance(value, str):
+            for key, value in properties.items():
+                if isinstance(value, dict):
+                    lines.append(f"    {key}: {{")
+                    for k, v in value.items():
+                        if isinstance(v, str):
+                            lines.append(f"      {k}: '{v}'")
+                        else:
+                            lines.append(f"      {k}: {v}")
+                    lines.append("    }")
+                elif isinstance(value, str):
                     lines.append(f"    {key}: '{value}'")
                 else:
                     lines.append(f"    {key}: {value}")
@@ -94,5 +119,11 @@ class StaticSiteBuilder:
             lines.append("  }")
         
         lines.append("}")
+        
+        # Add an output for the static site URL
+        lines.extend([
+            "",
+            f"output {resource.name}Url string = {resource.name}.properties.defaultHostname"
+        ])
         
         return "\n".join(lines)
