@@ -36,4 +36,5 @@ main.parameters.json
 resources.bicep
 
 # generated bicep output directory
-bicep/*
+bicep/*.bicep
+bicep/*.json
