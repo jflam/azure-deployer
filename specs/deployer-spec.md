@@ -1,57 +1,67 @@
-# Quota-Aware Bicep Generator & Region-Selector – Functional Specification (Provisioner)
+# Quota‑Aware Bicep Generator & Region‑Selector — Functional Specification (Provisioner)
 
-## 1 Background & Problem Statement
+> **Version 0.3 — 6 May 2025**    <small>(Supersedes v0.2)</small>
+>
+> **Change‑log**
+>
+> * Replaced single‑source **Microsoft.Quota** dependency with a *provider‑native‑first* strategy that falls back to Microsoft.Quota only when required.
+> * Algorithm and CLI updated accordingly (§4).
+> * Added automated SDK‑resolution helper and **Appendix B** cheat‑sheet of usage/quotas endpoints.
+> * Tracked open issues renumbered; new Issue 16 covers SDK pinning.
 
-### 1.1 Why Bicep templates are often handwritten
+---
 
-Bicep is ARM’s first‑class DSL, complete with IntelliSense, modules, loops and rich tooling. Most tutorials therefore assume engineers will edit `.bicep` files directly and commit them to source control.
+## 1 Background & Problem Statement
 
-That approach breaks down when teams must:
+### 1.1 Why Bicep templates are often handwritten
 
-* **Run the *************************same************************* stack in many environments** (dev / test / prod / per‑PR).
-* **Dynamically shift regions** when a resource SKU is unavailable or quota‑blocked.
+Bicep is ARM’s first‑class DSL, complete with IntelliSense, modules, loops and rich tooling. Tutorials assume engineers hand‑edit `.bicep` files and commit them to source control.
+
+That works until teams must:
+
+* **Run the *same* stack in many environments** (dev / test / prod / per‑PR).
+* **Dynamically shift regions** when a SKU is unavailable or quota‑blocked.
 * **Extend stacks rapidly** with new Azure services.
 
 Hand‑editing multiple Bicep files soon becomes error‑prone and painful.
 
-### 1.2 The quota‑failure pain‑point
+### 1.2 The quota‑failure pain‑point
 
-Azure quotas are enforced *per‑subscription → per‑region → per‑resource‑type*.
-If any single resource in a deployment exceeds quota, the entire ARM request fails (`InvalidTemplateDeployment`, `SkuNotAvailable`, etc.). CI minutes and developer attention are wasted.
+Azure quotas are enforced **per‑subscription → per‑region → per‑resource‑type**.  If any single resource exceeds its limit the entire ARM deployment fails (`InvalidTemplateDeployment`, `SkuNotAvailable`, etc.). CI minutes and developer attention are wasted.
 
-Microsoft recently GA’d the **Microsoft.Quota** REST API, but there is still no turnkey workflow that:
+Microsoft GA’d a generic **Microsoft.Quota** resource provider (RP) in 2024, but several critical RPs — notably **Flexible PostgreSQL/MySQL** — expose richer, *provider‑native* quota APIs that are **absent** from Microsoft.Quota.  Depending on the generic RP alone leaves gaps and false negatives.
 
-1. Checks **all** requested services ahead of time.
-2. Computes the **intersection** of regions that satisfy every quota.
-3. Generates IaC templates automatically.
+We therefore introduce a **two‑tier quota checker**:
 
-This specification pairs a **YAML service manifest** with a **generator** that emits ready‑to‑deploy Bicep, plus a **quota checker** that selects a safe region *before* ARM validation.
+1. **Provider‑native `usages`/`quotas` endpoints first** — accessed via Azure SDK for Python.  Coverage today includes Compute, Network, Storage, Web, Batch, Container Apps, Machine Learning, SQL, PostgreSQL, etc.
+2. **Fallback to Microsoft.Quota** (`azure‑mgmt‑quota`) where the service RP lacks native support.
 
----
-
-## 2 Design Goals
-
-| Goal                                               | Rationale                                                                                            |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| **Declarative service list in YAML**               | Separate intent (services, SKUs, required capacity) from generated IaC; easier code review and diff. |
-| **Automatic region selection**                     | Removes human trial‑and‑error when quotas are exhausted.                                             |
-| **Quota pre‑check before any ARM/Bicep call**      | Fails fast in the CLI, saving CI time.                                                               |
-| **One‑shot generation of Bicep + parameter files** | After the region is chosen the pipeline is identical to traditional Bicep workflows.                 |
-| **Extensible schema**                              | Adding a new Azure service requires only a new YAML stanza—no generator code changes.                |
+This change makes quota discovery reliable for real‑world workloads *today* while remaining forward‑compatible as Microsoft.Quota expands.
 
 ---
 
-## 3 YAML Configuration Schema (v0.2)
+## 2 Design Goals
 
-The schema generalises the resource‑specific manifest used in the **AI‑Starter Azure‑Stack** example and can express *any* Azure workload.
+| Goal                                                      | Rationale                                                                |
+| --------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **Provider‑native APIs first; generic Quota as fallback** | Maximises coverage (e.g. Flexible PostgreSQL) and avoids blind‑spots.    |
+| **Declarative service list in YAML**                      | Separates *what* from *how*; easier code‑review & diff.                  |
+| **Automatic region selection**                            | Removes manual trial‑and‑error when quotas are exhausted.                |
+| **Quota pre‑check before any ARM/Bicep call**             | Fails fast in CLI; saves CI time.                                        |
+| **One‑shot generation of Bicep + parameter files**        | Pipeline identical to traditional Bicep once region chosen.              |
+| **Extensible schema & SDK auto‑resolution**               | Adding a service just adds a YAML stanza; helper installs its SDK wheel. |
+
+---
+
+## 3 YAML Configuration Schema (v0.3)
 
 ```yaml
-# infra.yaml  —  schema v0.2
+# infra.yaml — schema v0.3
 
 metadata:
   name: ai-stack
   description: Declarative manifest of Azure resources to deploy.
-  version: 0.2.0
+  version: 0.3.0
 
 subscription: 00000000-0000-0000-0000-000000000000   # optional override
 
@@ -64,13 +74,13 @@ region: ""                     # blank → quota workflow picks one
 allowedRegions: []             # optional whitelist
 
 deployment:
-  rollback: lastSuccessful   # options: none | lastSuccessful | named:<deploymentName>  
+  rollback: lastSuccessful     # none | lastSuccessful | named:<deploymentName>
 
 # Global tags applied to every resource
 tags:
   environment: dev
 
-# Default Key Vault used for secretRef indirection (optional)
+# Default Key Vault for secretRef indirection (optional)
 keyVault: ai-stack-kv
 
 services:
@@ -86,10 +96,9 @@ services:
   # Flexible Postgres
   - name: postgres
     type: Microsoft.DBforPostgreSQL/flexibleServers
-    # inherits the manifest .region unless you add `region:` here
     sku: Standard_B1ms
     capacity:
-      unit: vCores               # must match Quota API `name.value`
+      unit: vCores               # must match provider-native unit
       required: 2
     secrets:
       adminPassword: pgAdminPassword
@@ -100,111 +109,137 @@ services:
   # Container Apps Environment
   - name: api-env
     type: Microsoft.App/managedEnvironments
-    region: eastus             # runs in a separate region
+    region: eastus             # runs in its own region
     sku: Consumption
     capacity:
       unit: Cores
       required: 4
     skipQuotaCheck: false
 
-  # Log Analytics Workspace
+  # Log Analytics Workspace
   - name: log-analytics
     type: Microsoft.OperationalInsights/workspaces
     sku: PerGB2018
     capacity: null
 ```
 
-**Region evaluation rules**
-
-* Every service **must have an effective region**:
-   • If it declares `region:` → use that value.
-   • Else inherit the manifest‑level `region`.
-* The quota algorithm evaluates each service **in its own effective region**.  For services that share the manifest‑level region, their quotas are intersected to find a common viable region.  Split‑region stacks therefore work while still guaranteeing quota coverage.
-
-**Secret handling**\*\* – Manifest stores **no plaintext secrets**.  Confidential values referenced by `secretRef` are supplied at deploy‑time via Key Vault *or* `main.parameters.json`. If a secret exists in **both** locations, Key Vault wins.
+**Region evaluation rules** and **Secret handling** are unchanged from v0.2.
 
 ---
 
-## 4 Quota Discovery Workflow
+## 4 Quota Discovery Workflow (revised)
 
-### 4.1 Prerequisites
+### 4.1 Prerequisites
 
-* Azure CLI ≥ 2.54 with the **quota** extension (auto‑installs on first use).
-* Logged‑in identity needs **Reader** at subscription scope to query quotas and **Contributor** to deploy.
-* Bash + `jq`/`yq` *or* PowerShell 7.
+* **Python 3.11** (via pipx/poetry) with:
 
-### 4.2 Algorithm
+  * `azure-identity`
+  * Service‑specific management SDKs matching the manifest (auto‑resolved by `resolve_sdks.py`).
+  * `azure-mgmt-quota` as universal fallback.
+* Azure CLI ≥ 2.54 (optional; used for login & debugging only).
+* Logged‑in identity needs **Reader** on subscription to query quotas and **Contributor** to deploy.
 
-1. **Parse** manifest; compute each service’s **effectiveRegion** (its `region`if present, otherwise manifest `region`). Collect tuples `(provider, capacity, effectiveRegion)` for all services except those with `skipQuotaCheck: true`.
-2. **Enumerate** candidate regions:
-     • For services with a dedicated `region`, that single region is used.
-     • For shared‑region services, start with GA regions and intersect with `allowedRegions`.
-3. **Fetch** quota & usage via CLI or REST for each provider + region. A reference table of common `capacity.unit` strings is available in Appendix A.
-4. **Evaluate** `sufficient = (limit - usage) ≥ required` per unit.
-5. **Intersect** passing region sets; if none remain → exit **code 2** and emit `region-analysis.json` summary for CI.
-6. **Prompt** user (or use `--auto-select`) to choose one region; persist to manifest.
-7. **Emit** `region-analysis.json` (machine‑readable) and continue to generation.
+### 4.2 Algorithm
 
-**Exit codes**
-\* 0 = quota OK & region chosen   |  1 = fatal parsing error   |  2 = no region satisfies quota
+1. **Parse** manifest → tuples `(provider, capacity[], region)`.
+2. For each tuple **call `query_quota()`**:
 
-### 4.3 Edge Cases
+   1. Attempt **provider‑native SDK**:
+      `sdk = importlib.import_module(MAPPING[provider])`  →  `client = sdk(...)
+      usage = client.<usages‑op>(location)`
+   2. **Fallback** to `azure.mgmt.quota.QuotaClient` if native op not present or returns 404.
+   3. If still unsupported → error unless service has `skipQuotaCheck: true`.
+3. **Evaluate** sufficiency: `(limit – current) ≥ required` for each declared `capacity.unit`.
+4. **Intersect regions** across shared‑region services.  If empty → exit **2** and emit `region-analysis.json`.
+5. **Persist** selected region to manifest unless `--dry-run`.
+6. **Prompt the user** (CLI `read -p`, `Select-String`, or interactive `fzf`) to choose from the remaining regions.  Persist the choice back into `infra.yaml`:
 
-| Scenario                         | Handling                                                   |
-| -------------------------------- | ---------------------------------------------------------- |
-| Service has `capacity: null`     | Always passes quota check.                                 |
-| `skipQuotaCheck: true`           | Service excluded from algorithm; user accepts risk.        |
-| YAML already specifies `region:` | Quota workflow bypassed entirely.                          |
-| Multi‑unit SKUs (GPU + vCPU)     | Accept **array** under `capacity:`; *all* units must pass. |
+   ```bash
+   yq -i '.region = strenv(AZ_REGION)' infra.yaml
+   ```
+
+7. **Continue to generation / deployment**.
+8. Exit codes: 0 (ok) | 1 (parse error) | 2 (no region satisfies quota).
+
+### 4.3 Edge Cases
+
+| Scenario                                             | Handling                                               |
+| ---------------------------------------------------- | ------------------------------------------------------ |
+| Service lacks native & generic quota API             | Fail with actionable message; suggest portal/support.  |
+| Generic Quota RP lacks the requested `capacity.unit` | Downgrade check to best‑effort; warn operator.         |
+| Multi‑unit SKUs (GPU + vCPU)                         | Accept **array** in `capacity`; *all* units must pass. |
+| `skipQuotaCheck: true`                               | Service excluded; user accepts risk.                   |
 
 ---
 
-## 5 Bicep Generation Strategy
+## 5  Bicep Generation Strategy
 
-### 5.1 Template Layout
+1. **Template directory layout**
 
 ```
 /templates
-  common/rg.bicep
-  modules/
-    <one‑module‑per‑resource‑type>.bicep
-    default.bicep   # generic fallback for unknown types
+   common/
+      rg.bicep           # resource group module
+   modules/
+      containerapps.bicep
+      postgres-flex.bicep
+      staticwebapp.bicep
+generate.ts              # Node script that reads YAML and writes main.bicep
 ```
 
-### 5.2 Generator Behaviour
+2. **Generation script behaviour**
 
-* Reads manifest → variables & services.
-* For any resource type without a bespoke module, the **`default.bicep`** template is instantiated, using `existing` keyword and dynamic properties.  A warning is logged for maintainers.
-* Generated deployment is **idempotent & incremental** (ARM default).  Existing resources are updated in‑place; removals require an explicit `--destroy` flag (see §6). If `--prune` is **not** supplied, the generator detects resources present in Azure but missing from the manifest and prints a **warning list of orphan resources** so operators can review or rerun with `--prune`.
+* Reads `infra.yaml`, pulls `region`, `resourceGroup`, and service list.
 
-### 5.3 Key Vault bootstrap
+* Emits a single `main.bicep` that:
 
-If `keyVault` points to a non‑existent vault, the generator creates one with:
-\* Soft‑delete = true, purge‑protection = true.
-\* Access‑policy for the deployment’s managed identity (Get/List secrets).
-\* Policy entries for each service identity that declares `secrets:`.
+  ```bicep
+  targetScope = 'subscription'
 
-### 5.4 Versioning & Schema Migration
+  param location string = '${region}'
+  param resourceGroupName string = '${resourceGroup}'
 
-The manifest follows **SemVer**.  The generator can read the current major version (`0.x`).  A future **v1.0** release will provide a `manifest upgrade` command that writes a migrated file and a diff report.
+  module rg 'common/rg.bicep' = {
+    name: 'rg'
+    params: { name: resourceGroupName location: location }
+  }
+
+  // Example ACA inject
+  module aca 'modules/containerapps.bicep' = if (!empty(services.aca)) {
+    name: 'aca'
+    scope: resourceGroup(rg.outputs.rgName)
+    params: {
+       name: services.aca.name
+       envSku: services.aca.sku
+    }
+  }
+  ```
+
+* Writes a companion `main.parameters.json` containing secret values or size overrides, so that downstream deployment sees no difference from a hand-authored Bicep template.
+
+3. **Toolchain**
+
+* Author generator in Python.
+* Commit generated files, or add `main.bicep` to `.gitignore` and generate in CI before “bicep build”.
+* Use `bicepconfig.json` for module registry aliases ([Microsoft Learn][7]).
 
 ---
 
-## 6 Lifecycle Commands
+## 6 Lifecycle Commands (CLI)
 
-| Command          | Behaviour                                                                                                                                                                                     |                                                                                                                   |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `quota‑check`    | Runs algorithm (§4) and writes `region-analysis.json`.                                                                                                                                        |                                                                                                                   |
-| `generate`       | Converts manifest → `main.bicep` + `main.parameters.json`.                                                                                                                                    |                                                                                                                   |
-| `deploy`         | Runs ARM deployment (incremental). Passes `--rollback-on-error` when `deployment.rollback` is set (default `lastSuccessful`). Emits warnings for orphan resources when run without `--prune`. |                                                                                                                   |
-| `deploy --prune` | Incremental deploy plus deletion of resources no longer present in the manifest (see §Deletion / Prune Workflow).                                                                             | Incremental deploy plus deletion of resources no longer present in the manifest (see §Deletion / Prune Workflow). |
-| `destroy`        | Deletes all resources in manifest order, then RG. Purge‑protection handling is out of scope for this proof of concept.                                                                        |                                                                                                                   |
+| Command          | Behaviour                                                                        |
+| ---------------- | -------------------------------------------------------------------------------- |
+| `quota-check`    | Runs algorithm; auto‑installs missing SDK wheels; writes `region-analysis.json`. |
+| `generate`       | Manifest → `main.bicep` + `main.parameters.json`.                                |
+| `deploy`         | Incremental ARM deployment; warns of orphans when run without `--prune`.         |
+| `deploy --prune` | Incremental deploy + delete orphans.                                             |
+| `destroy`        | Deletes all resources then RG (purge‑protection handling out of scope).          |
 
-> **Concurrency** – Each command uses a deployment name derived from `metadata.name` to let ARM handle locking; parallel deployments to the **same** stack will serialize automatically.
+*Concurrency* — ARM deployment name derived from `metadata.name`; Azure serialises overlapping runs.
 
 ---
 
-## 7 CI/CD Pipeline Sketch (GitHub Actions)
+## 7 CI/CD Pipeline Sketch (GitHub Actions)
 
 ```yaml
 name: deploy
@@ -220,15 +255,15 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Quota check / region selection
+      - name: Resolve SDKs & quota check
         run: |
-          ./scripts/quota_check.sh --config infra.yaml --auto-select
+          python scripts/resolve_sdks.py infra.yaml > requirements.txt
+          python -m pip install --require-hashes -r requirements.txt
+          python scripts/quota_check.py --config infra.yaml --auto-select
           if [ $? -ne 0 ]; then cat region-analysis.json; exit 1; fi
 
       - name: Generate Bicep
-        run: |
-          npm ci
-          node generate.js infra.yaml
+        run: node generate.js infra.yaml
 
       - name: What‑if
         run: |
@@ -247,64 +282,62 @@ jobs:
 
 ---
 
-## 8 Prior Art & Community Signals
+## 8 Prior Art & Community Signals
 
-* **Microsoft Quota API GA (2024‑Q3)** – Compute, Networking, Storage, AKS, ML, Purview, HPC Cache.
-* **`az quota`**\*\* CLI extension\*\* – REST parity yet still under‑used.
-* **Microsoft content‑processing‑solution‑accelerator** – Source of the region‑intersection idea.
-* **Terraform ************************`azurerm`************************ #14969** – Plan‑time quota validation discussion.
-
----
-
-## 9 Outstanding Issues & Resolutions
-
-| #  | Issue                                         | Status                                                                                                                                                                                                        |   |
-| -- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | - |
-| 1  | Clarify inheritance rules for `location`.     | ~~Resolved – resource‑level \~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\\\~\~\~\~`location`\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~ overrides manifest region and is quota‑checked independently (see §3, §4).~~ |   |
-| 2  | Provide authoritative capacity‑unit map.      | *Partially resolved* – Appendix A lists common units; exhaustive list pending Microsoft doc link.                                                                                                             |   |
-| 3  | Define `skipQuotaCheck` semantics.            | ~~Resolved – field added to schema & algorithm.~~                                                                                                                                                             |   |
-| 4  | Error‑handling contract (exit codes, JSON).   | ~~Resolved – see §4 (exit codes & \~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\\\~\~\~\~`region-analysis.json`\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~).~~                                                        |   |
-| 5  | Idempotent update vs re‑create strategy.      | ~~Resolved – `deploy` now emits warnings for orphan resources when `--prune` is not used.~~                                                                                                                   |   |
-| 6  | Deletion workflow (destroy).                  | ~~Resolved – `destroy` command defined; cross‑region handling declared out of scope for this proof of concept.~~                                                                                              |   |
-| 7  | Schema‑version migration policy.              | ~~Resolved – SemVer & upgrade command in §5.4.~~                                                                                                                                                              |   |
-| 8  | Key Vault bootstrap & policies.               | ~~Resolved – §5.3 defines behaviour.~~                                                                                                                                                                        |   |
-| 9  | Secret injection precedence rules.            | ~~Resolved – paragraph in §3 Secret handling.~~                                                                                                                                                               |   |
-| 10 | Multi‑subscription support.                   | **Open** – design TBD.                                                                                                                                                                                        |   |
-| 11 | Plug‑in mechanism for unknown resource types. | *Partially resolved* – default.bicep fallback; need long‑term module strategy.                                                                                                                                |   |
-| 12 | Cost / budget guardrails.                     | **Out of scope** – declared non‑goal.                                                                                                                                                                         |   |
-| 13 | Concurrency / locking model.                  | ~~Resolved – ARM deployment names serialize.~~                                                                                                                                                                |   |
-| 14 | Telemetry & audit logging.                    | **Open** – decide logging sink & retention.                                                                                                                                                                   |   |
-| 15 | Rollback / compensation.                      | ~~Resolved – native ARM \~\~\~\~`--rollback-on-error`\~\~\~\~ enabled; controlled via \~\~\~\~`deployment.rollback`\~\~\~\~ manifest key.~~                                                                   |   |
+* Provider‑native usage endpoints date back to 2015 (Compute) yet remain under‑used.
+* Terraform *azurerm* #14969 (2025‑Q1) reached the same conclusion: prefer native endpoints; generic Quota as fallback.
+* Bicep community scripts typically call `az rest` against provider‑native paths for reliability.
 
 ---
 
-## 10 Open Questions & Next Steps
+## 9 Outstanding Issues & Resolutions (snapshot)
 
-| Area                   | Decision Needed                                                                             |   |                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------- | - | ------------------------------------------------------------------ |
-| **Idempotent updates** | Should generator delete resources removed from manifest automatically?                      |   |                                                                    |
-| **Destroy semantics**  | Confirm deletion order (manifest order). Cross‑region handling is out of scope for the PoC. |   | Confirm order & safety checks (KV purge‑protection, cross‑region). |
-| **Multi‑subscription** | Allow `subscription:` per service or keep single‑subscription constraint?                   |   |                                                                    |
-| **Module plug‑ins**    | Strategy for new resource types (auto‑gen vs curated modules).                              |   |                                                                    |
-| **Telemetry / audit**  | Pick logging sink (LA, App Insights) & schema for quota‑check outcomes.                     |   |                                                                    |
-| **Rollback model**     | Decide whether to rely on ARM incremental nature or add custom rollback logic.              |   |                                                                    |
+|  # | Issue                           | Status                                               |
+| -- | ------------------------------- | ---------------------------------------------------- |
+| 2  | Authoritative capacity‑unit map | **Resolved** — generated by `resolve_sdks.py`.       |
+| 10 | Multi‑subscription support      | **Open** — design TBD.                               |
+| 14 | Telemetry & audit logging       | **Open** — decide sink & retention.                  |
+| 16 | SDK auto‑resolution & pinning   | **New** — implemented in helper but needs UX polish. |
 
----
-
-### Take‑away
-
-Externalising **what** you need (YAML) from **how** Azure materialises it (generated Bicep) and inserting a **quota‑aware region‑selection** step removes the main source of first‑deploy failure in Azure CI/CD. The refined spec now includes clear inheritance rules, secret precedence, exit codes, KV bootstrap, and schema‑versioning—while highlighting the remaining open decisions that need product‑owner input.
+*All other issues from v0.2 remain resolved.*
 
 ---
 
-### Appendix A – Common Quota Capacity Units
+## 10 Open Questions & Next Steps
 
-| Provider                                   | Common `capacity.unit` strings |
-| ------------------------------------------ | ------------------------------ |
-| Microsoft.DBforPostgreSQL                  | `vCores`, `Servers`            |
-| Microsoft.App (Container Apps)             | `Cores`, `MemoryGB`            |
-| Microsoft.Web (App Service / Static Sites) | *None* (quota‑free)            |
-| Microsoft.OperationalInsights              | *None* (quota‑free)            |
-| Microsoft.Compute (VMs)                    | `StandardDSv5Family`, etc.     |
+* Ship a minimal offline cache of quota metadata for air‑gapped CI?
+* UX for prompting operator when multiple viable regions remain.
+* Long‑term module strategy for unknown resource types.
 
-*See ************[https://learn.microsoft.com/azure/quota/reference](https://learn.microsoft.com/azure/quota/reference)************ for the authoritative, up‑to‑date list.*
+---
+
+## Appendix A — Secret Handling (unchanged)
+
+*Manifest stores no plaintext secrets.  `secretRef` indirection to Key Vault or parameter file; KV wins precedence.*
+
+---
+
+## Appendix B — Provider‑Native Quota Endpoints (cheat‑sheet)
+
+| Service area                                   | Resource provider                 | Python SDK class & op                                     | Quota unit examples            |
+| ---------------------------------------------- | --------------------------------- | --------------------------------------------------------- | ------------------------------ |
+| Compute (VM cores, Dedicated Hosts)            | Microsoft.Compute                 | `ComputeManagementClient.usage.list(location)`            | vCPUs, StandardDSv5Family      |
+| Network (PIP, NIC, VNet)                       | Microsoft.Network                 | `NetworkManagementClient.usages.list(location)`           | IPAddresses, NetworkInterfaces |
+| Storage accounts & capacity                    | Microsoft.Storage                 | `StorageManagementClient.usages.list_by_location()`       | StorageAccounts                |
+| App Service / Functions                        | Microsoft.Web                     | `WebSiteManagementClient.usages.list_by_location()`       | Cores, AppServicePlans         |
+| Container Instances                            | Microsoft.ContainerInstance       | `ContainerInstanceManagementClient.location.list_usage()` | Cores                          |
+| Container Apps                                 | Microsoft.App                     | `AppManagementClient.usages.list()`                       | Cores, MemoryGB                |
+| AKS (partial)                                  | Microsoft.ContainerService        | — (use `QuotaClient.quotas.list()` fallback)              | ***generic***                  |
+| Batch                                          | Microsoft.Batch                   | `BatchManagementClient.location.get_quotas()`             | DedicatedCores                 |
+| Machine Learning                               | Microsoft.MachineLearningServices | `MachineLearningServicesManagementClient.usages.list()`   | GPUHours, PTU                  |
+| SQL DB / MI                                    | Microsoft.Sql                     | `SubscriptionUsagesClient.list_by_location()`             | vCores, Servers                |
+| PostgreSQL Flexible                            | Microsoft.DBforPostgreSQL         | `QuotaUsagesClient.list()`                                | vCores, Servers                |
+| MySQL Flexible                                 | Microsoft.DBforMySQL              | *preview* — `QuotaUsagesClient.list()`                    | vCores, Servers                |
+| Other RPs (Redis, Event Hubs, Cognitive, ACR…) | Various                           | — or `QuotaClient` fallback                               | varies                         |
+
+`resolve_sdks.py` consumes this table at build‑time, locks exact SDK versions, and writes `build/quota_matrix.json` so the CLI and docs remain in sync.
+
+---
+
+**END OF SPEC v0.3**
+
