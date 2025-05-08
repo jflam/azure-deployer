@@ -1,19 +1,24 @@
 metadata:
   name: ai-starter-stack
   description: Static web + API + Postgres + KV + monitoring
-  version: 1.1.1
+  version: 1.1.5
 
 resourceGroup:
-  name: ai-starter-rg2
+  name: ai-starter-rg5
   region: "centralus"  # Will be selected by quota checker
 
 # Region selection behavior
 region: "centralus"  # Leave blank for quota workflow to pick one
 allowedRegions: [
   "eastus", 
-  "westus", 
+  "eastus2",
   "centralus",
-  "southcentralus"
+  "northcentralus",
+  "southcentralus",
+  "westcentralus",
+  "westus", 
+  "westus2",
+  "westus3",
 ]  
 
 deployment:
@@ -37,8 +42,9 @@ services:
         app: ai-starter
 
   # Flexible Postgres
-  - name: postgres
+  - name: aiappstarterpostgres4
     type: Microsoft.DBforPostgreSQL/flexibleServers
+    region: eastus2
     sku: Standard_B1ms
     capacity:
       unit: vCores

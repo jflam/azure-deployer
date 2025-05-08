@@ -76,7 +76,8 @@ class StaticSiteBuilder:
         lines = [
             f"resource {safe_name} '{resource.type}@{resource.api_version}' = {{",
             f"  name: '{resource.name}'",
-            f"  location: location"
+            f"  location: location",
+            f"  kind: 'app'"
         ]
         
         # Add SKU
@@ -95,9 +96,9 @@ class StaticSiteBuilder:
                 "  }"
             ])
         
-        # Add properties if present
+        # Always add properties (even if empty) - required by Azure API
+        lines.append("  properties: {")
         if properties:
-            lines.append("  properties: {")
             for key, value in properties.items():
                 if isinstance(value, dict):
                     lines.append(f"    {key}: {{")
@@ -111,7 +112,10 @@ class StaticSiteBuilder:
                     lines.append(f"    {key}: '{value}'")
                 else:
                     lines.append(f"    {key}: {value}")
-            lines.append("  }")
+        else:
+            # Add allowConfigFileUpdates as a default property
+            lines.append("    allowConfigFileUpdates: true")
+        lines.append("  }")
         
         # Add tags if present
         if tags:

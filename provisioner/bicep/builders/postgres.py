@@ -7,7 +7,7 @@ class PostgresBuilder:
     
     def __init__(self):
         """Initialize the builder."""
-        self.api_version = "2023-06-01"  # Latest stable API version
+        self.api_version = "2024-08-01"  # Latest stable API version
     
     def build(self, service: Dict, manifest: Dict) -> str:
         """Build a Bicep resource snippet for PostgreSQL Flexible Server.
@@ -31,8 +31,8 @@ class PostgresBuilder:
         props = service.get("properties", {})
         secrets = service.get("secrets", {})
         
-        # Create admin password parameter
-        password_param_name = f"{service['name']}AdminPassword"
+        # Create admin password parameter - using a generic name to simplify
+        password_param_name = "postgresAdminPassword"
         
         # Create resource
         resource = BicepResource(
@@ -64,8 +64,8 @@ class PostgresBuilder:
         )
         
         # Generate Bicep code
-        # Use resource name without hyphens for the Bicep identifier
-        safe_name = resource.name.replace('-', '_')
+        # Use a standardized resource name for the Bicep identifier
+        safe_name = "postgres"
         lines = [
             f"resource {safe_name} '{resource.type}@{resource.api_version}' = {{",
             f"  name: '{resource.name}'",
@@ -138,10 +138,10 @@ class PostgresBuilder:
         
         lines.append("}")
         
-        # Add outputs for connection string and server FQDN (using safe names)
-        safe_name = resource.name.replace('-', '_')
-        output_fqdn = f"{safe_name}_fqdn"
-        output_conn = f"{safe_name}_connection_string"
+        # Add outputs for connection string and server FQDN (using standardized names)
+        safe_name = "postgres"
+        output_fqdn = "postgres_fqdn"
+        output_conn = "postgres_connection_string"
         lines.extend([
             "",
             f"output {output_fqdn} string = {safe_name}.properties.fullyQualifiedDomainName",

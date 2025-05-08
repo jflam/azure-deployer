@@ -134,7 +134,8 @@ def quota_check(
 def generate(
     config: str = typer.Option("infra.yaml", "--config", "-c", help="Path to the infrastructure YAML file"),
     output_dir: str = typer.Option(None, "--output-dir", "-o", help="Directory for generated Bicep files"),
-    debug: bool = typer.Option(False, "--debug", help="Print verbose debug information including generated Bicep")
+    debug: bool = typer.Option(False, "--debug", help="Print verbose debug information including generated Bicep"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force deletion of existing Bicep files before generating new ones")
 ):
     """Generate Bicep template and parameters file from YAML manifest."""
     console.print("[bold blue]Generating Bicep files...[/]")
@@ -145,6 +146,32 @@ def generate(
         if not manifest.region:
             console.print("[bold yellow]WARNING: No region specified in manifest. Run quota-check first to select an optimal region.[/]")
             console.print("[yellow]Continuing with generation, but deployment may fail without a valid region.[/]")
+        
+        # Set up output directory and check for existing files
+        output_path = Path(output_dir) if output_dir else Path(config).parent
+        main_bicep_path = output_path / "main.bicep"
+        resources_bicep_path = output_path / "resources.bicep"
+        params_path = output_path / "main.parameters.json"
+        
+        # Check for existing files and handle force option
+        existing_files = []
+        if main_bicep_path.exists():
+            existing_files.append(main_bicep_path)
+        if resources_bicep_path.exists():
+            existing_files.append(resources_bicep_path)
+        if params_path.exists():
+            existing_files.append(params_path)
+            
+        if existing_files and not force:
+            existing_files_str = ", ".join(str(f) for f in existing_files)
+            console.print(f"[bold yellow]WARNING: Bicep files already exist: {existing_files_str}[/]")
+            console.print("[yellow]Use --force to overwrite existing files.[/]")
+            return 1
+        elif existing_files and force:
+            for file in existing_files:
+                file.unlink()
+                if debug:
+                    console.print(f"[blue]Debug: Deleted existing file {file}[/]")
         
         # Generate Bicep files
         generator = BicepGenerator(config, output_dir, debug=debug)
@@ -175,6 +202,7 @@ def deploy(
     config: str = typer.Option("infra.yaml", "--config", "-c", help="Path to the infrastructure YAML file"),
     prune: bool = typer.Option(False, "--prune", help="Delete orphaned resources"),
     what_if: bool = typer.Option(False, "--what-if", help="Show what would be deployed without making changes"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force regeneration of Bicep files even if they exist"),
     debug: bool = typer.Option(False, "--debug", help="Print verbose debug information including all Azure CLI commands")
 ):
     """Deploy resources to Azure using generated Bicep files."""
@@ -191,13 +219,29 @@ def deploy(
             console.print("[bold red]No region specified in manifest. Run quota-check first.[/]")
             return 1
         
-        # Generate Bicep files if they don't exist
-        bicep_path = Path("main.bicep")
-        params_path = Path("main.parameters.json")
+        # Set up paths for Bicep files
+        output_dir = Path(config).parent
+        bicep_path = output_dir / "main.bicep"
+        resources_bicep_path = output_dir / "resources.bicep"
+        params_path = output_dir / "main.parameters.json"
         
-        if not bicep_path.exists() or not params_path.exists():
-            console.print("[yellow]Bicep files not found. Generating...[/]")
-            generator = BicepGenerator(config)
+        # Generate Bicep files if they don't exist or force is specified
+        if force or not bicep_path.exists() or not resources_bicep_path.exists() or not params_path.exists():
+            if force:
+                console.print("[yellow]Force flag specified. Regenerating Bicep files...[/]")
+                
+                # Delete existing files if they exist
+                if bicep_path.exists():
+                    bicep_path.unlink()
+                if resources_bicep_path.exists():
+                    resources_bicep_path.unlink()
+                if params_path.exists():
+                    params_path.unlink()
+            else:
+                console.print("[yellow]Bicep files not found. Generating...[/]")
+                
+            # Generate new files
+            generator = BicepGenerator(config, debug=debug)
             bicep_path, params_path = generator.generate()
         
         # Create unique deployment name

@@ -186,10 +186,10 @@ param postgresAdminPassword string = ''
         for service in services:
             service_dict = service if isinstance(service, dict) else service.model_dump() if hasattr(service, "model_dump") else {}
             
-            # For Postgres admin password
+            # For Postgres admin password - using a generic name to simplify
             if service_dict.get("type") == "Microsoft.DBforPostgreSQL/flexibleServers":
                 if service_dict.get("secrets", {}).get("adminPassword"):
-                    secure_params.add(f"{service_dict.get('name')}AdminPassword")
+                    secure_params.add("postgresAdminPassword")
         
         return secure_params
     

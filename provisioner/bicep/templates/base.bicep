@@ -34,6 +34,9 @@ module resources 'resources.bicep' = {
 {% endfor %}
 {% endif %}
   }
+  dependsOn: [
+    rg
+  ]
 }
 
 // Forward outputs from the nested module

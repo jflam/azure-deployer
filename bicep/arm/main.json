@@ -1,0 +1,245 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.35.1.17967",
+      "templateHash": "2521216420265980873"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string"
+    },
+    "resourceGroupName": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {}
+    },
+    "postgresAdminPassword": {
+      "type": "securestring"
+    }
+  },
+  "resources": {
+    "rg": {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2022-09-01",
+      "name": "[parameters('resourceGroupName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
+    },
+    "resources": {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "resourcesDeployment",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[parameters('tags')]"
+          },
+          "postgresAdminPassword": {
+            "value": "[parameters('postgresAdminPassword')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "languageVersion": "2.0",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.35.1.17967",
+              "templateHash": "17267002032489661340"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "object",
+              "defaultValue": {}
+            },
+            "postgresAdminPassword": {
+              "type": "securestring",
+              "defaultValue": ""
+            }
+          },
+          "resources": {
+            "log_analytics": {
+              "type": "Microsoft.OperationalInsights/workspaces",
+              "apiVersion": "2022-10-01",
+              "name": "log-analytics",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "PerGB2018"
+              },
+              "properties": {
+                "retentionInDays": 30,
+                "features": {
+                  "enableLogAccessUsingOnlyResourcePermissions": true
+                },
+                "publicNetworkAccessForIngestion": "Enabled",
+                "publicNetworkAccessForQuery": "Enabled"
+              },
+              "tags": {
+                "environment": "dev"
+              }
+            },
+            "postgres": {
+              "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+              "apiVersion": "2024-08-01",
+              "name": "aiappstarterpostgres4",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "Standard_B1ms",
+                "tier": "Burstable"
+              },
+              "properties": {
+                "version": "16",
+                "storage": {
+                  "storageSizeGB": 32
+                },
+                "backup": {
+                  "backupRetentionDays": 7,
+                  "geoRedundantBackup": false
+                },
+                "administratorLogin": "pgadmin",
+                "administratorLoginPassword": "[parameters('postgresAdminPassword')]"
+              },
+              "tags": {
+                "environment": "dev"
+              }
+            },
+            "api_env": {
+              "type": "Microsoft.App/managedEnvironments",
+              "apiVersion": "2023-05-01",
+              "name": "api-env",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "Consumption"
+              },
+              "properties": {
+                "zoneRedundant": false,
+                "workloadProfiles": [
+                  {
+                    "name": "Consumption",
+                    "workloadProfileType": "Consumption"
+                  }
+                ],
+                "appLogsConfiguration": {
+                  "destination": "log-analytics",
+                  "logAnalyticsConfiguration": {
+                    "customerId": "[reference('log_analytics').customerId]",
+                    "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', 'log-analytics'), '2022-10-01').primarySharedKey]"
+                  }
+                }
+              },
+              "tags": {
+                "environment": "dev"
+              },
+              "dependsOn": [
+                "log_analytics"
+              ]
+            },
+            "static_web": {
+              "type": "Microsoft.Web/staticSites",
+              "apiVersion": "2023-01-01",
+              "name": "static-web",
+              "location": "[parameters('location')]",
+              "kind": "app",
+              "sku": {
+                "name": "Free",
+                "tier": "Free"
+              },
+              "properties": {
+                "allowConfigFileUpdates": true
+              },
+              "tags": {
+                "environment": "dev",
+                "app": "ai-starter"
+              }
+            }
+          },
+          "outputs": {
+            "log_analytics_id": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.OperationalInsights/workspaces', 'log-analytics')]"
+            },
+            "log_analytics_customer_id": {
+              "type": "string",
+              "value": "[reference('log_analytics').customerId]"
+            },
+            "log_analytics_primary_key": {
+              "type": "securestring",
+              "metadata": {
+                "description": "Primary shared key for Log Analytics - Note: Contains sensitive information"
+              },
+              "value": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', 'log-analytics'), '2022-10-01').primarySharedKey]"
+            },
+            "postgres_fqdn": {
+              "type": "string",
+              "value": "[reference('postgres').fullyQualifiedDomainName]"
+            },
+            "postgres_connection_string": {
+              "type": "securestring",
+              "metadata": {
+                "description": "Connection string for PostgreSQL - Note: Contains sensitive information"
+              },
+              "value": "[format('postgresql://{0}:{1}@{2}:5432/postgres?sslmode=require', reference('postgres').administratorLogin, parameters('postgresAdminPassword'), reference('postgres').fullyQualifiedDomainName)]"
+            },
+            "api_env_id": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.App/managedEnvironments', 'api-env')]"
+            },
+            "api_env_default_domain": {
+              "type": "string",
+              "value": "[reference('api_env').defaultDomain]"
+            },
+            "static_web_url": {
+              "type": "string",
+              "value": "[reference('static_web').defaultHostname]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "rg"
+      ]
+    }
+  },
+  "outputs": {
+    "rgName": {
+      "type": "string",
+      "value": "[parameters('resourceGroupName')]"
+    },
+    "log_analytics_id": {
+      "type": "string",
+      "value": "[listOutputsWithSecureValues(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'resourcesDeployment'), '2022-09-01').log_analytics_id]"
+    },
+    "postgres_fqdn": {
+      "type": "string",
+      "value": "[listOutputsWithSecureValues(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'resourcesDeployment'), '2022-09-01').postgres_fqdn]"
+    },
+    "api_env_id": {
+      "type": "string",
+      "value": "[listOutputsWithSecureValues(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'resourcesDeployment'), '2022-09-01').api_env_id]"
+    },
+    "static_web_url": {
+      "type": "string",
+      "value": "[listOutputsWithSecureValues(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'resourcesDeployment'), '2022-09-01').static_web_url]"
+    }
+  }
+}
